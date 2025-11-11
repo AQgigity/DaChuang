@@ -410,16 +410,6 @@
               <FilePath>..\Core\Inc\MPU6050.h</FilePath>
             </File>
             <File>
-              <FileName>kalman_filter.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\Core\Src\kalman_filter.c</FilePath>
-            </File>
-            <File>
-              <FileName>kalman_filter.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\Core\Inc\kalman_filter.h</FilePath>
-            </File>
-            <File>
               <FileName>MyI2C.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\Core\Src\MyI2C.c</FilePath>
@@ -677,6 +667,16 @@
               <FileName>system_config.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\Core\Inc\system_config.h</FilePath>
+            </File>
+            <File>
+              <FileName>MAX30102.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\MAX30102.c</FilePath>
+            </File>
+            <File>
+              <FileName>MAX30102.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Core\Inc\MAX30102.h</FilePath>
             </File>
           </Files>
         </Group>

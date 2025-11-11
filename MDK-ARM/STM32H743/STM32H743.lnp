@@ -1,7 +1,6 @@
 --cpu Cortex-M7.fp.dp --lto
 "stm32h743\startup_stm32h743xx.o"
 "stm32h743\mpu6050.o"
-"stm32h743\kalman_filter.o"
 "stm32h743\myi2c.o"
 "stm32h743\main.o"
 "stm32h743\gpio.o"

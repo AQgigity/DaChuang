@@ -1,5 +1,14 @@
 #include "main.h"
 
+
+
+static void EnableFPU(void)
+{
+    /* 启用FPU */
+    SCB->CPACR |= ((3UL << 10*2) | (3UL << 11*2));  // 启用CP10和CP11全访问
+}
+
+
 /**
   * @brief System Clock Configuration
   * @retval None
@@ -70,7 +79,7 @@ void MPU_Config(void)
 
   /* Disables the MPU */
   HAL_MPU_Disable();
-
+  EnableFPU();
   /** Initializes and configures the Region and the memory to be protected
   */
   MPU_InitStruct.Enable = MPU_REGION_ENABLE;
@@ -148,3 +157,4 @@ void MPU_Config(void)
   /* Enables the MPU */
   HAL_MPU_Enable(MPU_HFNMI_PRIVDEF);
 }
+
