@@ -1,9 +1,9 @@
-#ifndef __SYSTEM_CONFIG_H
-#define __SYSTEM_CONFIG_H
+// #ifndef __SYSTEM_CONFIG_H
+// #define __SYSTEM_CONFIG_H
 
-#include "main.h"
+// #include "main.h"
 
-void SystemClock_Config(void);
-void MPU_Config(void);
+// void SystemClock_Config(void);
+// void MPU_Config(void);
 
-#endif /* __SYSTEM_CONFIG_H */
+// #endif /* __SYSTEM_CONFIG_H */
