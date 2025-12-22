@@ -4,23 +4,31 @@
   * @file           : main.c
   * @brief          : Main program body
   ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2025 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
   */
 /* USER CODE END Header */
-
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 #include "adc.h"
 #include "dma.h"
 #include "i2c.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
-#include "MAX30102.h"  // 确保包含这个头文件
-#include <stdio.h>
-#include <inttypes.h>  // 添加这个头文件以支持PRId32格式
-#include <stdlib.h> 
+
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "MPU6050.h"
 
 /* USER CODE END Includes */
 
@@ -42,47 +50,27 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-// 重定向printf
+// 使用AXI SRAM的绝对地址 - DMA2可以访问的区域
+// #define AXI_SRAM_BASE 0x24000000
+// volatile uint16_t *adc_buffer = (volatile uint16_t*)AXI_SRAM_BASE;
+
+char uart_buffer[32];
+
+
 int _write(int file, char *ptr, int len)
 {
     (void)file;
     HAL_UART_Transmit(&huart1, (uint8_t*)ptr, len, HAL_MAX_DELAY);
     return len;
 }
-
-// 状态变量
-MAX30102_Data_t sensor_data;
-
-// 算法结果
-int32_t heart_rate = 0;
-int32_t spo2_value = 0;
-int8_t hr_valid = 0;
-int8_t spo2_valid = 0;
-
-// 状态
-uint32_t last_print_time = 0;
-uint8_t sensor_initialized = 0;
-
-// 改进的滤波缓冲区
-#define HR_HISTORY_SIZE 5
-#define SPO2_HISTORY_SIZE 3
-int32_t hr_history[HR_HISTORY_SIZE] = {0};
-int32_t spo2_history[SPO2_HISTORY_SIZE] = {0};
-uint8_t hr_index = 0, spo2_index = 0;
-
-// 稳定性检测
-int32_t last_stable_hr = 0;
-int32_t last_stable_spo2 = 0;
-uint8_t stable_count = 0;
-#define MIN_STABLE_COUNT 3
-
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MPU_Config(void);
+void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
-
+#include <stdio.h>  
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -96,20 +84,38 @@ static void MPU_Config(void);
   */
 int main(void)
 {
+
   /* USER CODE BEGIN 1 */
 
   /* USER CODE END 1 */
 
   /* MPU Configuration--------------------------------------------------------*/
-  MPU_Config();
+    MPU_Config();
 
   /* Enable the CPU Cache */
+
+  /* Enable I-Cache---------------------------------------------------------*/
   SCB_EnableICache();
+
+  /* Enable D-Cache---------------------------------------------------------*/
   SCB_EnableDCache();
 
   /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
+
+  /* USER CODE BEGIN Init */
+
+  
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
   SystemClock_Config();
+
+  /* USER CODE BEGIN SysInit */
+
+  /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
@@ -120,199 +126,97 @@ int main(void)
   MX_TIM2_Init();
   MX_USART2_UART_Init();
   MX_I2C1_Init();
-
   /* USER CODE BEGIN 2 */
-  printf("\r\n======================\r\n");
-  printf("MAX30102 测试程序\r\n");
-  printf("======================\r\n\r\n");
-  
-  // 检查设备
-  printf("检测传感器... ");
-  if(HAL_I2C_IsDeviceReady(&hi2c1, MAX30102_I2C_ADDR, 3, 100) == HAL_OK)
-  {
-      printf("[OK]\r\n");
-  }
-  else
-  {
-      printf("[失败]\r\n");
-      while(1)
-      {
-          HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
-          HAL_Delay(200);
-      }
-  }
-  
-  // 初始化
-  printf("初始化传感器... ");
-  MAX30102_Init(&hi2c1);
-  MAX30102_InitData(&sensor_data);
-  printf("[完成]\r\n");
-  
-  printf("\r\n收集初始数据...\r\n");
-  for(int i = 0; i < BUFFER_SIZE; i++)
-  {
-      MAX30102_CollectData(&hi2c1, &sensor_data);
-      if((i+1) % 20 == 0) printf(".");
-      HAL_Delay(10);
-  }
-  
-  printf("\r\n\r\n开始监测...\r\n");
-  printf("HR(bpm) | SpO2(%%)\r\n");
-  printf("------------------\r\n");
-  
-  sensor_initialized = 1;
+  // printf("=== H7 ADC DMA测试（AXI SRAM绝对地址）===\r\n");
+  // printf("缓冲区地址: 0x%08lX\r\n", (unsigned long)adc_buffer);
+
+  // // 验证地址是否正确在AXI SRAM域
+  // uint32_t addr = (uint32_t)adc_buffer;
+  // if(addr >= 0x24000000 && addr < 0x24080000) {
+  //     printf("✅ 缓冲区在AXI SRAM域，DMA2可以访问\r\n");
+  // } else {
+  //     printf("❌ 缓冲区地址错误！\r\n");
+  //     Error_Handler();
+  // }
+
+  // // 初始化缓冲区
+  // *adc_buffer = 0xAAAA;  // 设置初始值用于测试
+  // printf("初始缓冲区值: 0x%04X\r\n", (unsigned int)*adc_buffer);
+
+  // // 清理AXI SRAM域缓存
+  // SCB_CleanDCache_by_Addr((uint32_t*)adc_buffer, sizeof(uint16_t));
+
+  // // 重置为0
+  // *adc_buffer = 0;
+
+  // // 执行H7 ADC校准
+  // printf("执行ADC校准...\r\n");
+  // if(HAL_ADCEx_Calibration_Start(&hadc1, ADC_CALIB_OFFSET_LINEARITY, ADC_SINGLE_ENDED) != HAL_OK) {
+  //     printf("ADC校准失败\r\n");
+  // } else {
+  //     printf("ADC校准成功\r\n");
+  // }
+
+  // // 启动DMA
+  // printf("启动DMA...\r\n");
+  // if(HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, 1) != HAL_OK) {
+  //     printf("DMA启动失败\r\n");
+  //     Error_Handler();
+  // } else {
+  //     printf("DMA启动成功\r\n");
+  // }
+
+  // // 测试读取
+  // printf("测试读取ADC值...\r\n");
+  // for(int i = 0; i < 5; i++) {
+  //     HAL_Delay(5);
+  //     SCB_CleanDCache_by_Addr((uint32_t*)adc_buffer, sizeof(uint16_t));
+  //     printf("测试 %d: %u (0x%04X)\r\n", i+1, (unsigned int)*adc_buffer, (unsigned int)*adc_buffer);
+  // }
+  // printf("开始连续监测...\r\n");
   /* USER CODE END 2 */
+
+  /* Init scheduler */
+   osKernelInitialize(); /* Call init function for freertos objects (in cmsis_os2.c) */
+  MX_FREERTOS_Init();
+
+  /* Start scheduler */
+   osKernelStart();
+   //vTaskStartScheduler();
+// HAL_UART_Transmit(&huart1, (uint8_t*)"=== MPU6050 Motion Detection ===\r\n", 34, 100);
+//     HAL_Delay(100);
+    
+//     // 一行代码完成MPU6050初始化和校准
+//     if(!MPU6050_AutoInit(&huart1)) {
+//         // 初始化失败，停止程序
+//         HAL_UART_Transmit(&huart1, (uint8_t*)"System Halted! Check MPU6050 connection.\r\n", 43, 100);
+//         while(1) {
+//             HAL_Delay(1000);
+//         }
+//     }
+  /* We should never get here as control is now taken by the scheduler */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
- while (1)
-{
-    if(sensor_initialized)
-    {
-        // 收集数据
-        MAX30102_CollectData(&hi2c1, &sensor_data);
-        
-        // 每秒计算一次
-        uint32_t current_time = HAL_GetTick();
-        if(current_time - last_print_time >= 1000)
-        {
-            // 计算心率血氧
-            MAX30102_CalculateHR_SpO2(&sensor_data,
-                                     &heart_rate, &spo2_value,
-                                     &hr_valid, &spo2_valid);
-            
-            // 改进的滤波算法
-            int32_t filtered_hr = 0, filtered_spo2 = 0;
-            uint8_t display_valid = 0;
-            
-            if(hr_valid && spo2_valid)
-            {
-                // 1. 存储到历史缓冲区
-                hr_history[hr_index] = heart_rate;
-                hr_index = (hr_index + 1) % HR_HISTORY_SIZE;
-                
-                spo2_history[spo2_index] = spo2_value;
-                spo2_index = (spo2_index + 1) % SPO2_HISTORY_SIZE;
-                
-                // 2. 计算中值滤波（更稳定）
-                int32_t hr_sorted[HR_HISTORY_SIZE];
-                int32_t spo2_sorted[SPO2_HISTORY_SIZE];
-                
-                // 复制数组
-                for(int i = 0; i < HR_HISTORY_SIZE; i++)
-                    hr_sorted[i] = hr_history[i];
-                for(int i = 0; i < SPO2_HISTORY_SIZE; i++)
-                    spo2_sorted[i] = spo2_history[i];
-                
-                // 简单排序（冒泡）
-                for(int i = 0; i < HR_HISTORY_SIZE-1; i++) {
-                    for(int j = i+1; j < HR_HISTORY_SIZE; j++) {
-                        if(hr_sorted[i] > hr_sorted[j]) {
-                            int32_t temp = hr_sorted[i];
-                            hr_sorted[i] = hr_sorted[j];
-                            hr_sorted[j] = temp;
-                        }
-                    }
-                }
-                
-                for(int i = 0; i < SPO2_HISTORY_SIZE-1; i++) {
-                    for(int j = i+1; j < SPO2_HISTORY_SIZE; j++) {
-                        if(spo2_sorted[i] > spo2_sorted[j]) {
-                            int32_t temp = spo2_sorted[i];
-                            spo2_sorted[i] = spo2_sorted[j];
-                            spo2_sorted[j] = temp;
-                        }
-                    }
-                }
-                
-                // 取中值
-                filtered_hr = hr_sorted[HR_HISTORY_SIZE/2];
-                filtered_spo2 = spo2_sorted[SPO2_HISTORY_SIZE/2];
-                
-                // 3. 稳定性检查（心率变化不应太大）
-                if(last_stable_hr == 0) {
-                    last_stable_hr = filtered_hr;
-                    last_stable_spo2 = filtered_spo2;
-                    stable_count = 1;
-                } else {
-                    // 检查心率变化是否在合理范围内（±20bpm内）
-                  int32_t hr_diff = abs((int)(filtered_hr - last_stable_hr));
-                    if(hr_diff <= 20) {
-                        stable_count++;
-                        if(stable_count >= MIN_STABLE_COUNT) {
-                            last_stable_hr = filtered_hr;
-                            last_stable_spo2 = filtered_spo2;
-                            display_valid = 1;
-                        }
-                    } else {
-                        stable_count = 0;
-                        last_stable_hr = filtered_hr;
-                        last_stable_spo2 = filtered_spo2;
-                    }
-                }
-                
-                // 4. 显示结果
-                if(display_valid)
-                {
-                    // 最终合理性检查
-                    if(filtered_hr >= 40 && filtered_hr <= 180 &&
-                       filtered_spo2 >= 70 && filtered_spo2 <= 100)
-                    {
-                        printf("✓ HR:%3d | SpO2:%2d%%\r\n", 
-                               (int)filtered_hr, (int)filtered_spo2);
-                        
-                        // 按心率频率闪烁LED
-                        static uint32_t last_blink = 0;
-                        uint32_t interval = 60000 / filtered_hr; // 转换为ms
-                        if(current_time - last_blink >= interval/2) {
-                            HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
-                            last_blink = current_time;
-                        }
-                    }
-                    else if(filtered_hr >= 30 && filtered_hr <= 200)
-                    {
-                        printf("HR:%3d | SpO2:%2d%% (注意)\r\n", 
-                               (int)filtered_hr, (int)filtered_spo2);
-                    }
-                }
-                else
-                {
-                    printf("正在稳定... (%d/%d)\r\n", 
-                           stable_count, MIN_STABLE_COUNT);
-                }
-            }
-            else if(hr_valid)
-            {
-                printf("HR:%3d | SpO2: 计算中\r\n", (int)heart_rate);
-            }
-            else if(spo2_valid)
-            {
-                printf("HR: 计算中 | SpO2:%2d%%\r\n", (int)spo2_value);
-            }
-            else
-            {
-                // 显示原始信号强度以帮助调试
-                static uint32_t signal_counter = 0;
-                if(signal_counter++ % 5 == 0)
-                {
-                    uint32_t recent_ir = sensor_data.ir_buffer[sensor_data.index];
-                    uint32_t recent_red = sensor_data.red_buffer[sensor_data.index];
-              printf("信号: IR=%lu, RED=%lu\r\n", 
-       (unsigned long)recent_ir, (unsigned long)recent_red);
-                }
-                else
-                {
-                    printf("正在检测信号...\r\n");
-                }
-            }
-            
-            last_print_time = current_time;
-        }
-    }
+  while (1)
+  {
+    // 读取前清理AXI SRAM域缓存
+    // SCB_CleanDCache_by_Addr((uint32_t*)adc_buffer, sizeof(uint16_t));
+    //   MPU6050_ReadProcessedData(&sensor_data);
     
-    HAL_Delay(10);
+    // // // 方法1：使用内置打印函数（推荐）
+    // MPU6050_PrintData(&huart1, &sensor_data);
+    // // 使用printf输出
+    // printf("ADC: %u\r\n", (unsigned int)*adc_buffer);
+       HAL_Delay(200);
+    // HAL_Delay(500);
+    /* USER CODE END WHILE */
+// printf("=== H7 ADC DMA测试（AXI SRAM绝对地址）===\r\n");
+    /* USER CODE BEGIN 3 */
+  }
+  /* USER CODE END 3 */
 }
-}
+
 /**
   * @brief System Clock Configuration
   * @retval None
@@ -322,15 +226,19 @@ void SystemClock_Config(void)
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-  /** Supply configuration update enable */
+  /** Supply configuration update enable
+  */
   HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY);
 
-  /** Configure the main internal regulator output voltage */
+  /** Configure the main internal regulator output voltage
+  */
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE0);
 
   while(!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
 
-  /** Initializes the RCC Oscillators according to the specified parameters */
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
@@ -348,7 +256,8 @@ void SystemClock_Config(void)
     Error_Handler();
   }
 
-  /** Initializes the CPU, AHB and APB buses clocks */
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2
                               |RCC_CLOCKTYPE_D3PCLK1|RCC_CLOCKTYPE_D1PCLK1;
@@ -371,6 +280,7 @@ void SystemClock_Config(void)
 /* USER CODE END 4 */
 
  /* MPU Configuration */
+
 void MPU_Config(void)
 {
   MPU_Region_InitTypeDef MPU_InitStruct = {0};
@@ -378,7 +288,8 @@ void MPU_Config(void)
   /* Disables the MPU */
   HAL_MPU_Disable();
 
-  /** Initializes and configures the Region and the memory to be protected */
+  /** Initializes and configures the Region and the memory to be protected
+  */
   MPU_InitStruct.Enable = MPU_REGION_ENABLE;
   MPU_InitStruct.Number = MPU_REGION_NUMBER0;
   MPU_InitStruct.BaseAddress = 0x20000000;
@@ -393,7 +304,8 @@ void MPU_Config(void)
 
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
-  /** Initializes and configures the Region and the memory to be protected */
+  /** Initializes and configures the Region and the memory to be protected
+  */
   MPU_InitStruct.Number = MPU_REGION_NUMBER1;
   MPU_InitStruct.BaseAddress = 0x24000000;
   MPU_InitStruct.Size = MPU_REGION_SIZE_512KB;
@@ -402,7 +314,8 @@ void MPU_Config(void)
 
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
-  /** Initializes and configures the Region and the memory to be protected */
+  /** Initializes and configures the Region and the memory to be protected
+  */
   MPU_InitStruct.Number = MPU_REGION_NUMBER2;
   MPU_InitStruct.BaseAddress = 0x30000000;
   MPU_InitStruct.IsShareable = MPU_ACCESS_NOT_SHAREABLE;
@@ -410,7 +323,8 @@ void MPU_Config(void)
 
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
-  /** Initializes and configures the Region and the memory to be protected */
+  /** Initializes and configures the Region and the memory to be protected
+  */
   MPU_InitStruct.Number = MPU_REGION_NUMBER3;
   MPU_InitStruct.BaseAddress = 0x38000000;
   MPU_InitStruct.Size = MPU_REGION_SIZE_64KB;
@@ -419,7 +333,8 @@ void MPU_Config(void)
 
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
-  /** Initializes and configures the Region and the memory to be protected */
+  /** Initializes and configures the Region and the memory to be protected
+  */
   MPU_InitStruct.Number = MPU_REGION_NUMBER4;
   MPU_InitStruct.BaseAddress = 0x60000000;
   MPU_InitStruct.Size = MPU_REGION_SIZE_256MB;
@@ -428,7 +343,8 @@ void MPU_Config(void)
 
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
-  /** Initializes and configures the Region and the memory to be protected */
+  /** Initializes and configures the Region and the memory to be protected
+  */
   MPU_InitStruct.Number = MPU_REGION_NUMBER5;
   MPU_InitStruct.BaseAddress = 0xC0000000;
   MPU_InitStruct.Size = MPU_REGION_SIZE_32MB;
@@ -437,7 +353,8 @@ void MPU_Config(void)
 
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
-  /** Initializes and configures the Region and the memory to be protected */
+  /** Initializes and configures the Region and the memory to be protected
+  */
   MPU_InitStruct.Number = MPU_REGION_NUMBER6;
   MPU_InitStruct.BaseAddress = 0x80000000;
   MPU_InitStruct.Size = MPU_REGION_SIZE_256MB;
@@ -447,6 +364,29 @@ void MPU_Config(void)
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
   /* Enables the MPU */
   HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
+
+}
+
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM6 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM6)
+  {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
 }
 
 /**
@@ -462,7 +402,6 @@ void Error_Handler(void)
   }
   /* USER CODE END Error_Handler_Debug */
 }
-
 #ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
@@ -474,7 +413,7 @@ void Error_Handler(void)
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
-  printf("Assert failed: file %s on line %" PRIu32 "\r\n", file, line);
+  printf("Assert failed: file %s on line %lu\r\n", file, (unsigned long)line);
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
