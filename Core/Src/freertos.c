@@ -11,6 +11,7 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>  
 #include "MPU6050.h"
+#include "MY_Tasks.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -33,15 +34,29 @@ extern UART_HandleTypeDef huart1;
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 128 * 4,
+  .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for MAX30102_Task */
+osThreadId_t MAX30102_TaskHandle;
+const osThreadAttr_t MAX30102_Task_attributes = {
+  .name = "MAX30102_Task",
+  .stack_size = 512 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for MAX30102_Queue */
+osMessageQueueId_t MAX30102_QueueHandle;
+const osMessageQueueAttr_t MAX30102_Queue_attributes = {
+  .name = "MAX30102_Queue"
 };
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
+void MAX30102_Tasks(void *argument);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
+void StartTask(void *argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -63,12 +78,19 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN RTOS_TIMERS */
   /* USER CODE END RTOS_TIMERS */
 
+  /* Create the queue(s) */
+  /* creation of MAX30102_Queue */
+  MAX30102_QueueHandle = osMessageQueueNew (16, sizeof(HeartRateData_t), &MAX30102_Queue_attributes);
+
   /* USER CODE BEGIN RTOS_QUEUES */
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
   /* creation of defaultTask */
-  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+  // defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+
+  /* creation of MAX30102_Task */
+  MAX30102_TaskHandle = osThreadNew(MAX30102_Tasks, NULL, &MAX30102_Task_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* USER CODE END RTOS_THREADS */
@@ -111,6 +133,24 @@ void StartDefaultTask(void *argument)
     vTaskDelay(1);
   }
   /* USER CODE END StartDefaultTask */
+}
+
+/* USER CODE BEGIN Header_StartTask */
+/**
+* @brief Function implementing the MAX30102_Task thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartTask */
+void StartTask(void *argument)
+{
+  /* USER CODE BEGIN StartTask */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END StartTask */
 }
 
 /* Private application code --------------------------------------------------*/

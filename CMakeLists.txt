@@ -52,7 +52,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/system_config.c
     Core/Src/stm32h7xx_it.c
     Core/Src/stm32h7xx_hal_msp.c
-  
+   Core/Src/MY_Tasks.c
     Core/Src/sysmem.c  # 确保包含sysmem.c
 )
 

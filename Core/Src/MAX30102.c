@@ -432,3 +432,88 @@ void MAX30102_CalculateHR_SpO2(MAX30102_Data_t *data,
         hr_valid
     );
 }
+int32_t simple_hr_with_exercise(int32_t raw_hr)
+{
+    static int32_t smoothed = 85;
+    static int32_t last_hr = 85;
+    static uint8_t exercise_mode = 0;
+    
+    // 有效性检查
+    if(raw_hr < 50 || raw_hr > 180) return smoothed;
+    
+    // 检测是否在运动（心率持续高于100）
+    static uint8_t high_hr_count = 0;
+    if(raw_hr > 110)
+    {
+        high_hr_count++;
+        if(high_hr_count > 6)  // 持续高心率
+        {
+            exercise_mode = 1;
+        }
+    }
+    else
+    {
+        high_hr_count = 0;
+        if(raw_hr < 90)  // 低心率持续
+        {
+            exercise_mode = 0;
+        }
+    }
+    
+    // 根据模式选择滤波强度
+    if(exercise_mode)
+    {
+        // 运动模式：弱滤波，快速响应 (alpha=0.75)
+        smoothed = (raw_hr * 3 + smoothed) / 4;
+    }
+    else
+    {
+        // 静息模式：强滤波，稳定 (alpha=0.125)
+        smoothed = (raw_hr + smoothed * 7) / 8;
+    }
+    
+    last_hr = raw_hr;
+    return smoothed;
+}
+
+// 血氧滤波函数
+int32_t spo2_filter(int32_t raw_spo2)
+{
+    static int32_t smoothed = 98;
+    
+    // 有效性检查
+    if(raw_spo2 < 70 || raw_spo2 > 100) return smoothed;
+    
+    // 强滤波保持稳定 (alpha=0.2)
+    smoothed = (raw_spo2 + smoothed * 4) / 5;
+    
+    return smoothed;
+}
+
+// 信号质量检测
+uint8_t check_signal_quality(uint32_t *ir_data, uint16_t count)
+{
+    if(count < 10) return 0;
+    
+    // 检查最近10个点的变化
+    uint32_t min_val = 0xFFFFFFFF;
+    uint32_t max_val = 0;
+    
+    int start_idx = (count > 10) ? (count - 10) : 0;
+    
+    for(int i = start_idx; i < count; i++)
+    {
+        if(ir_data[i] < min_val) min_val = ir_data[i];
+        if(ir_data[i] > max_val) max_val = ir_data[i];
+    }
+    
+    uint32_t amplitude = max_val - min_val;
+    
+    // 如果信号变化太小，认为没有手指
+    if(amplitude < 50)
+    {
+        return 0;  // 信号差
+    }
+    
+    return 1;  // 信号好
+}

@@ -80,92 +80,91 @@ void MX_FREERTOS_Init(void);
 // 增强版心率滤波
 /* USER CODE BEGIN PFP */
 // 心率滤波函数（支持运动/静息模式）
-int32_t simple_hr_with_exercise(int32_t raw_hr)
-{
-    static int32_t smoothed = 85;
-    static int32_t last_hr = 85;
-    static uint8_t exercise_mode = 0;
+// int32_t simple_hr_with_exercise(int32_t raw_hr)
+// {
+//     static int32_t smoothed = 85;
+//     static int32_t last_hr = 85;
+//     static uint8_t exercise_mode = 0;
     
-    // 有效性检查
-    if(raw_hr < 50 || raw_hr > 180) return smoothed;
+//     // 有效性检查
+//     if(raw_hr < 50 || raw_hr > 180) return smoothed;
     
-    // 检测是否在运动（心率持续高于100）
-    static uint8_t high_hr_count = 0;
-    if(raw_hr > 110)
-    {
-        high_hr_count++;
-        if(high_hr_count > 6)  // 持续高心率
-        {
-            exercise_mode = 1;
-        }
-    }
-    else
-    {
-        high_hr_count = 0;
-        if(raw_hr < 90)  // 低心率持续
-        {
-            exercise_mode = 0;
-        }
-    }
+//     // 检测是否在运动（心率持续高于100）
+//     static uint8_t high_hr_count = 0;
+//     if(raw_hr > 110)
+//     {
+//         high_hr_count++;
+//         if(high_hr_count > 6)  // 持续高心率
+//         {
+//             exercise_mode = 1;
+//         }
+//     }
+//     else
+//     {
+//         high_hr_count = 0;
+//         if(raw_hr < 90)  // 低心率持续
+//         {
+//             exercise_mode = 0;
+//         }
+//     }
     
-    // 根据模式选择滤波强度
-    if(exercise_mode)
-    {
-        // 运动模式：弱滤波，快速响应 (alpha=0.75)
-        smoothed = (raw_hr * 3 + smoothed) / 4;
-    }
-    else
-    {
-        // 静息模式：强滤波，稳定 (alpha=0.125)
-        smoothed = (raw_hr + smoothed * 7) / 8;
-    }
+//     // 根据模式选择滤波强度
+//     if(exercise_mode)
+//     {
+//         // 运动模式：弱滤波，快速响应 (alpha=0.75)
+//         smoothed = (raw_hr * 3 + smoothed) / 4;
+//     }
+//     else
+//     {
+//         // 静息模式：强滤波，稳定 (alpha=0.125)
+//         smoothed = (raw_hr + smoothed * 7) / 8;
+//     }
     
-    last_hr = raw_hr;
-    return smoothed;
-}
+//     last_hr = raw_hr;
+//     return smoothed;
+// }
 
-// 血氧滤波函数
-int32_t spo2_filter(int32_t raw_spo2)
-{
-    static int32_t smoothed = 98;
+// // 血氧滤波函数
+// int32_t spo2_filter(int32_t raw_spo2)
+// {
+//     static int32_t smoothed = 98;
     
-    // 有效性检查
-    if(raw_spo2 < 70 || raw_spo2 > 100) return smoothed;
+//     // 有效性检查
+//     if(raw_spo2 < 70 || raw_spo2 > 100) return smoothed;
     
-    // 强滤波保持稳定 (alpha=0.2)
-    smoothed = (raw_spo2 + smoothed * 4) / 5;
+//     // 强滤波保持稳定 (alpha=0.2)
+//     smoothed = (raw_spo2 + smoothed * 4) / 5;
     
-    return smoothed;
-}
+//     return smoothed;
+// }
 
-// 信号质量检测
-uint8_t check_signal_quality(uint32_t *ir_data, uint16_t count)
-{
-    if(count < 10) return 0;
+// // 信号质量检测
+// uint8_t check_signal_quality(uint32_t *ir_data, uint16_t count)
+// {
+//     if(count < 10) return 0;
     
-    // 检查最近10个点的变化
-    uint32_t min_val = 0xFFFFFFFF;
-    uint32_t max_val = 0;
+//     // 检查最近10个点的变化
+//     uint32_t min_val = 0xFFFFFFFF;
+//     uint32_t max_val = 0;
     
-    int start_idx = (count > 10) ? (count - 10) : 0;
+//     int start_idx = (count > 10) ? (count - 10) : 0;
     
-    for(int i = start_idx; i < count; i++)
-    {
-        if(ir_data[i] < min_val) min_val = ir_data[i];
-        if(ir_data[i] > max_val) max_val = ir_data[i];
-    }
+//     for(int i = start_idx; i < count; i++)
+//     {
+//         if(ir_data[i] < min_val) min_val = ir_data[i];
+//         if(ir_data[i] > max_val) max_val = ir_data[i];
+//     }
     
-    uint32_t amplitude = max_val - min_val;
+//     uint32_t amplitude = max_val - min_val;
     
-    // 如果信号变化太小，认为没有手指
-    if(amplitude < 50)
-    {
-        return 0;  // 信号差
-    }
+//     // 如果信号变化太小，认为没有手指
+//     if(amplitude < 50)
+//     {
+//         return 0;  // 信号差
+//     }
     
-    return 1;  // 信号好
-}
-/* USER CODE END PFP */
+//     return 1;  // 信号好
+// }
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -185,7 +184,7 @@ int main(void)
   /* USER CODE END 1 */
 
   /* MPU Configuration--------------------------------------------------------*/
-    MPU_Config();
+  MPU_Config();
 
   /* Enable the CPU Cache */
 
@@ -279,94 +278,22 @@ int main(void)
   /* USER CODE END 2 */
 
   /* Init scheduler */
- //  osKernelInitialize(); /* Call init function for freertos objects (in cmsis_os2.c) */
- // MX_FREERTOS_Init();
+  osKernelInitialize();  /* Call init function for freertos objects (in cmsis_os2.c) */
+  MX_FREERTOS_Init();
 
   /* Start scheduler */
-//    osKernelStart();
-   //vTaskStartScheduler();
-// HAL_UART_Transmit(&huart1, (uint8_t*)"=== MPU6050 Motion Detection ===\r\n", 34, 100);
-//     HAL_Delay(100);
-    
-//     // 一行代码完成MPU6050初始化和校准
-//     if(!MPU6050_AutoInit(&huart1)) {
-//         // 初始化失败，停止程序
-//         HAL_UART_Transmit(&huart1, (uint8_t*)"System Halted! Check MPU6050 connection.\r\n", 43, 100);
-//         while(1) {
-//             HAL_Delay(1000);
-//         }
-//     }
+  osKernelStart();
+
   /* We should never get here as control is now taken by the scheduler */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-   while (1)
-{
-    static uint32_t ir_data[500];
-    static uint32_t red_data[500];
-    static uint16_t count = 0;
-    static int32_t last_hr = 0;
-    static int32_t last_spo2 = 0;
-    
-    uint32_t red, ir;
-    
-    if(MAX30102_ReadFIFO(&hi2c1, &red, &ir))
-    {
-        // 存储数据
-        ir_data[count] = ir;
-        red_data[count] = red;
-        count++;
-        
-        HAL_Delay(10);
-        
-        if(count >= 500)
-        {
-            int32_t hr, sp;
-            int8_t hr_valid, sp_valid;
-            
-            maxim_heart_rate_and_oxygen_saturation(
-                ir_data, 500, red_data,
-                &sp, &sp_valid,
-                &hr, &hr_valid
-            );
-            
-            // 显示结果
-            if(hr_valid && hr >= 50 && hr <= 180)
-            {
-                // 心率滤波
-                int32_t display_hr = simple_hr_with_exercise(hr);
-                last_hr = display_hr;
-                
-                // 血氧滤波（如果有效）
-                if(sp_valid && sp >= 70 && sp <= 100)
-                {
-                    last_spo2 = spo2_filter(sp);
-                    printf("心率:%3d 血氧:%2d%%\r\n", display_hr, last_spo2);
-                }
-                else
-                {
-                    printf("心率:%3d 血氧:--\r\n", display_hr);
-                }
-            }
-            else if(last_hr > 0)  // 显示上次有效值
-            {
-                printf("心率:%3d 血氧:%2d%% (保持)\r\n", last_hr, last_spo2);
-            }
-            else
-            {
-                printf("等待有效信号...\r\n");
-            }
-            
-            // 滑动窗口
-            for(int i = 100; i < 500; i++)
-            {
-                ir_data[i-100] = ir_data[i];
-                red_data[i-100] = red_data[i];
-            }
-            count = 400;
-        }
-    }
-}
+  while (1)
+  {
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+  }
   /* USER CODE END 3 */
 }
 
