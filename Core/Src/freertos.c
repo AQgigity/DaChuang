@@ -6,9 +6,11 @@
 #include "task.h"
 #include "main.h"
 #include "cmsis_os.h"
-#include "MPU6050.h"
+
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdio.h>  
+#include "MPU6050.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -31,7 +33,7 @@ extern UART_HandleTypeDef huart1;
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size =1024,
+  .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 
@@ -81,23 +83,32 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
-  HAL_UART_Transmit(&huart1, (uint8_t*)"=== MPU6050 Motion Detection ===\r\n", 34, 100);
-    vTaskDelay(100);
-    
-    // 一行代码完成MPU6050初始化和校准
-    if(!MPU6050_AutoInit(&huart1)) {
-        // 初始化失败，停止程序
-        HAL_UART_Transmit(&huart1, (uint8_t*)"System Halted! Check MPU6050 connection.\r\n", 43, 100);
-        while(1) {
-            vTaskDelay(500);
-        }
-    }
-        SensorData_t sensor_data;
-        for(;;)
+  MPU6050_AutoInit(&huart1);
+  
+  SensorData_t sensor_data;
+  
+  for(;;)
   {
-    MPU6050_ReadProcessedData(&sensor_data);
-     MPU6050_PrintData(&huart1, &sensor_data);
-       vTaskDelay(200);
+    // 生产
+    MPU6050_ReadAndEnqueue();
+    
+    // 每200ms显示
+    static uint32_t timer = 0;
+    if (HAL_GetTick() - timer >= 200) {
+        // 取数据
+        while (MPU6050_Queue_Pop(&sensor_queue, &sensor_data)) {
+            // 取最新的
+        }
+        
+        // 显示（这里和以前完全一样）
+        printf("Acc: X:%7.3fg Y:%7.3fg Z:%7.3fg | Gyro: X:%7.2f Y:%7.2f Z:%7.2f\r\n",
+               sensor_data.accel_g[0], sensor_data.accel_g[1], sensor_data.accel_g[2],
+               sensor_data.gyro_dps[0], sensor_data.gyro_dps[1], sensor_data.gyro_dps[2]);
+        
+        timer = HAL_GetTick();
+    }
+    
+    vTaskDelay(1);
   }
   /* USER CODE END StartDefaultTask */
 }
@@ -105,3 +116,4 @@ void StartDefaultTask(void *argument)
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
 /* USER CODE END Application */
+

@@ -41,6 +41,14 @@ typedef struct {
     uint32_t count;                     // 总采样计数
 } MAX30102_Data_t;
 
+typedef struct {
+    int32_t heart_rate;     // 心率
+    int32_t spo2;           // 血氧
+    uint8_t hr_valid;       // 心率有效标志
+    uint8_t spo2_valid;     // 血氧有效标志
+    uint32_t timestamp;     // 时间戳
+} HR_SpO2_Data_t;
+// ===================================================================
 // ===== 基础驱动函数 =====
 void MAX30102_Init(I2C_HandleTypeDef *hi2c);
 void MAX30102_Reset(I2C_HandleTypeDef *hi2c);

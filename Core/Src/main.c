@@ -29,7 +29,10 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "MPU6050.h"
-
+#include "MAX30102.h"
+#include <stdlib.h>
+#include "stdio.h"
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -44,7 +47,7 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
+extern I2C_HandleTypeDef hi2c1; 
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -53,7 +56,11 @@
 // 使用AXI SRAM的绝对地址 - DMA2可以访问的区域
 // #define AXI_SRAM_BASE 0x24000000
 // volatile uint16_t *adc_buffer = (volatile uint16_t*)AXI_SRAM_BASE;
-
+MAX30102_Data_t max30102_data;
+int32_t heart_rate = 0;
+int32_t spo2 = 0;
+int8_t hr_valid = 0;
+int8_t spo2_valid = 0;
 char uart_buffer[32];
 
 
@@ -70,7 +77,95 @@ void SystemClock_Config(void);
 static void MPU_Config(void);
 void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
-#include <stdio.h>  
+// 增强版心率滤波
+/* USER CODE BEGIN PFP */
+// 心率滤波函数（支持运动/静息模式）
+int32_t simple_hr_with_exercise(int32_t raw_hr)
+{
+    static int32_t smoothed = 85;
+    static int32_t last_hr = 85;
+    static uint8_t exercise_mode = 0;
+    
+    // 有效性检查
+    if(raw_hr < 50 || raw_hr > 180) return smoothed;
+    
+    // 检测是否在运动（心率持续高于100）
+    static uint8_t high_hr_count = 0;
+    if(raw_hr > 110)
+    {
+        high_hr_count++;
+        if(high_hr_count > 6)  // 持续高心率
+        {
+            exercise_mode = 1;
+        }
+    }
+    else
+    {
+        high_hr_count = 0;
+        if(raw_hr < 90)  // 低心率持续
+        {
+            exercise_mode = 0;
+        }
+    }
+    
+    // 根据模式选择滤波强度
+    if(exercise_mode)
+    {
+        // 运动模式：弱滤波，快速响应 (alpha=0.75)
+        smoothed = (raw_hr * 3 + smoothed) / 4;
+    }
+    else
+    {
+        // 静息模式：强滤波，稳定 (alpha=0.125)
+        smoothed = (raw_hr + smoothed * 7) / 8;
+    }
+    
+    last_hr = raw_hr;
+    return smoothed;
+}
+
+// 血氧滤波函数
+int32_t spo2_filter(int32_t raw_spo2)
+{
+    static int32_t smoothed = 98;
+    
+    // 有效性检查
+    if(raw_spo2 < 70 || raw_spo2 > 100) return smoothed;
+    
+    // 强滤波保持稳定 (alpha=0.2)
+    smoothed = (raw_spo2 + smoothed * 4) / 5;
+    
+    return smoothed;
+}
+
+// 信号质量检测
+uint8_t check_signal_quality(uint32_t *ir_data, uint16_t count)
+{
+    if(count < 10) return 0;
+    
+    // 检查最近10个点的变化
+    uint32_t min_val = 0xFFFFFFFF;
+    uint32_t max_val = 0;
+    
+    int start_idx = (count > 10) ? (count - 10) : 0;
+    
+    for(int i = start_idx; i < count; i++)
+    {
+        if(ir_data[i] < min_val) min_val = ir_data[i];
+        if(ir_data[i] > max_val) max_val = ir_data[i];
+    }
+    
+    uint32_t amplitude = max_val - min_val;
+    
+    // 如果信号变化太小，认为没有手指
+    if(amplitude < 50)
+    {
+        return 0;  // 信号差
+    }
+    
+    return 1;  // 信号好
+}
+/* USER CODE END PFP */
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -127,6 +222,13 @@ int main(void)
   MX_USART2_UART_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
+   printf("MAX30102 心率血氧监测开始...\r\n");
+    
+    /* MAX30102初始化 */
+    MAX30102_Init(&hi2c1);
+    MAX30102_InitData(&max30102_data);
+    
+    printf("传感器初始化完成\r\n");
   // printf("=== H7 ADC DMA测试（AXI SRAM绝对地址）===\r\n");
   // printf("缓冲区地址: 0x%08lX\r\n", (unsigned long)adc_buffer);
 
@@ -177,11 +279,11 @@ int main(void)
   /* USER CODE END 2 */
 
   /* Init scheduler */
-   osKernelInitialize(); /* Call init function for freertos objects (in cmsis_os2.c) */
-  MX_FREERTOS_Init();
+ //  osKernelInitialize(); /* Call init function for freertos objects (in cmsis_os2.c) */
+ // MX_FREERTOS_Init();
 
   /* Start scheduler */
-   osKernelStart();
+//    osKernelStart();
    //vTaskStartScheduler();
 // HAL_UART_Transmit(&huart1, (uint8_t*)"=== MPU6050 Motion Detection ===\r\n", 34, 100);
 //     HAL_Delay(100);
@@ -198,22 +300,73 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
-    // 读取前清理AXI SRAM域缓存
-    // SCB_CleanDCache_by_Addr((uint32_t*)adc_buffer, sizeof(uint16_t));
-    //   MPU6050_ReadProcessedData(&sensor_data);
+   while (1)
+{
+    static uint32_t ir_data[500];
+    static uint32_t red_data[500];
+    static uint16_t count = 0;
+    static int32_t last_hr = 0;
+    static int32_t last_spo2 = 0;
     
-    // // // 方法1：使用内置打印函数（推荐）
-    // MPU6050_PrintData(&huart1, &sensor_data);
-    // // 使用printf输出
-    // printf("ADC: %u\r\n", (unsigned int)*adc_buffer);
-       HAL_Delay(200);
-    // HAL_Delay(500);
-    /* USER CODE END WHILE */
-// printf("=== H7 ADC DMA测试（AXI SRAM绝对地址）===\r\n");
-    /* USER CODE BEGIN 3 */
-  }
+    uint32_t red, ir;
+    
+    if(MAX30102_ReadFIFO(&hi2c1, &red, &ir))
+    {
+        // 存储数据
+        ir_data[count] = ir;
+        red_data[count] = red;
+        count++;
+        
+        HAL_Delay(10);
+        
+        if(count >= 500)
+        {
+            int32_t hr, sp;
+            int8_t hr_valid, sp_valid;
+            
+            maxim_heart_rate_and_oxygen_saturation(
+                ir_data, 500, red_data,
+                &sp, &sp_valid,
+                &hr, &hr_valid
+            );
+            
+            // 显示结果
+            if(hr_valid && hr >= 50 && hr <= 180)
+            {
+                // 心率滤波
+                int32_t display_hr = simple_hr_with_exercise(hr);
+                last_hr = display_hr;
+                
+                // 血氧滤波（如果有效）
+                if(sp_valid && sp >= 70 && sp <= 100)
+                {
+                    last_spo2 = spo2_filter(sp);
+                    printf("心率:%3d 血氧:%2d%%\r\n", display_hr, last_spo2);
+                }
+                else
+                {
+                    printf("心率:%3d 血氧:--\r\n", display_hr);
+                }
+            }
+            else if(last_hr > 0)  // 显示上次有效值
+            {
+                printf("心率:%3d 血氧:%2d%% (保持)\r\n", last_hr, last_spo2);
+            }
+            else
+            {
+                printf("等待有效信号...\r\n");
+            }
+            
+            // 滑动窗口
+            for(int i = 100; i < 500; i++)
+            {
+                ir_data[i-100] = ir_data[i];
+                red_data[i-100] = red_data[i];
+            }
+            count = 400;
+        }
+    }
+}
   /* USER CODE END 3 */
 }
 

@@ -53,8 +53,8 @@ void MAX30102_Init(I2C_HandleTypeDef *hi2c)
     MAX30102_WriteReg(hi2c, REG_FIFO_CONFIG, 0x0f);
     MAX30102_WriteReg(hi2c, REG_MODE_CONFIG, 0x03);
     MAX30102_WriteReg(hi2c, REG_SPO2_CONFIG, 0x27);
-    MAX30102_WriteReg(hi2c, REG_LED1_PA, 0x24);
-    MAX30102_WriteReg(hi2c, REG_LED2_PA, 0x24);
+    MAX30102_WriteReg(hi2c, REG_LED1_PA, 0x32);
+    MAX30102_WriteReg(hi2c, REG_LED2_PA, 0x32);
     MAX30102_WriteReg(hi2c, REG_PILOT_PA, 0x7f);
 }
 
