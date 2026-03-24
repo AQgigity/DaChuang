@@ -21,6 +21,7 @@ typedef struct {
   * @retval None
   */
 void MAX30102_Tasks(void *argument);
+void FusionTasks(void *argument);
 extern osMessageQueueId_t MAX30102_QueueHandle;
 
 

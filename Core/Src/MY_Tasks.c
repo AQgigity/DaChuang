@@ -1,9 +1,5 @@
-#include "stdio.h"
-#include "MAX30102.h"      // 包含MAX30102头文件，里面有函数声明
-#include "MPU6050.h"
-#include "cmsis_os.h"      // 使用CMSIS-RTOS API
 #include "main.h"
-#include "MY_Tasks.h"
+
 // 在 MAX30102.h 中应该已经有这个结构体定义
 // 如果没有，可以在这里定义：
 
@@ -81,41 +77,42 @@ if(hr_valid && hr >= 50 && hr <= 180)
                 
                 // ================== 关键部分 ==================
                 // 1. 把结果放入队列（CubeMX生成的队列）
-                if(MAX30102_QueueHandle != NULL)
+                if(result.hr_valid && MAX30102_QueueHandle != NULL)
                 {
-                    // 使用CMSIS-RTOS API发送数据
                     osMessageQueuePut(MAX30102_QueueHandle, &result, 0, 0);
+
                 }
+
                 
-                // 2. 同时在同一任务中打印结果
-                if(result.hr_valid)
-                {
-                    if(result.spo2_valid)
-                    {
-                        // 使用%ld格式打印int32_t
-                        printf("心率:%3ld 血氧:%2ld%%\r\n", 
-                               (long)result.heart_rate, (long)result.blood_oxygen);
-                    }
-                    else if(last_spo2 > 0)
-                    {
-                        printf("心率:%3ld 血氧:%2ld%% (保持)\r\n", 
-                               (long)result.heart_rate, (long)last_spo2);
-                    }
-                    else
-                    {
-                        printf("心率:%3ld 血氧:--\r\n", (long)result.heart_rate);
-                    }
-                }
-                else if(last_hr > 0)
-                {
-                    printf("心率:%3ld 血氧:%2ld%% (保持)\r\n", 
-                           (long)last_hr, (long)last_spo2);
-                }
-                else
-                {
-                    printf("等待有效信号...\r\n");
-                }
-                // ===========================================
+               
+                // if(result.hr_valid)
+                // {
+                //     if(result.spo2_valid)
+                //     {
+                //         // 使用%ld格式打印int32_t
+                //         printf("心率:%3ld 血氧:%2ld%%\r\n", 
+                  //              (long)result.heart_rate, (long)result.blood_oxygen);
+                //     }
+                //     else if(last_spo2 > 0)
+                //     {
+                //         printf("心率:%3ld 血氧:%2ld%% (保持)\r\n", 
+                //                (long)result.heart_rate, (long)last_spo2);
+                //     }
+                //     else
+                //     {
+                //         printf("心率:%3ld 血氧:--\r\n", (long)result.heart_rate);
+                //     }
+                // }
+                // else if(last_hr > 0)
+                // {
+                //     printf("心率:%3ld 血氧:%2ld%% (保持)\r\n", 
+                //            (long)last_hr, (long)last_spo2);
+                // }
+                // else
+                // {
+                //     printf("等待有效信号...\r\n");
+                // }
+               
                 
                 // 滑动窗口
                 for(int i = 100; i < 500; i++)
@@ -131,6 +128,82 @@ if(hr_valid && hr >= 50 && hr <= 180)
             // 如果没有读取到数据
             osDelay(10);
         }
+
     }
+
+                 osDelay(10);
     /* USER CODE END StartDefaultTask */
+}
+void FusionTasks(void *argument)
+{
+
+    HeartRateData_t hrData;
+    SensorData_t mpuData;
+    FusionData_t fusionData;
+    
+    for(;;)
+    {
+        // 接收MAX30102
+        if(osMessageQueueGet(MAX30102_QueueHandle, &hrData, NULL, 0) == osOK)
+        {
+            // 直接赋值（编译器自动处理，比memcpy更简洁）
+            fusionData.heart_rate = hrData.heart_rate;
+            fusionData.blood_oxygen = hrData.blood_oxygen;
+            fusionData.hr_valid = hrData.hr_valid;
+            fusionData.spo2_valid = hrData.spo2_valid;
+        }
+        
+        // 接收MPU6050
+        if(MPU6050_Queue_Pop(&sensor_queue, &mpuData) == 1)
+        {
+            // 数组用memcpy
+            memcpy(fusionData.accel_g, mpuData.accel_g, sizeof(fusionData.accel_g));
+            memcpy(fusionData.gyro_dps, mpuData.gyro_dps, sizeof(fusionData.gyro_dps));
+            
+                      printf("Acc: X:%7.3fg Y:%7.3fg Z:%7.3fg | Gyro: X:%7.2f Y:%7.2f Z:%7.2f\r\n",
+                    fusionData.accel_g[0], 
+                 fusionData.accel_g[1], 
+                   fusionData.accel_g[2],
+                    fusionData.gyro_dps[0], 
+                   fusionData.gyro_dps[1], 
+                    fusionData.gyro_dps[2]);
+            
+
+         }
+            // 2. 打印MAX30102数据（根据有效性显示）
+            if(fusionData.hr_valid)
+            {
+                if(fusionData.spo2_valid)
+                {
+                    printf("心率:%3ld 血氧:%2ld%%\r\n", 
+                           (long)fusionData.heart_rate, 
+                           (long)fusionData.blood_oxygen);
+                }
+                else if(fusionData.blood_oxygen > 0)
+                {
+                    printf("心率:%3ld 血氧:%2ld%% (保持)\r\n", 
+                           (long)fusionData.heart_rate, 
+                           (long)fusionData.blood_oxygen);
+                }
+                else
+                {
+                    printf("心率:%3ld 血氧:--\r\n", (long)fusionData.heart_rate);
+                }
+            }
+            else if(fusionData.heart_rate > 0)
+            {
+                printf("心率:%3ld 血氧:%2ld%% (保持)\r\n", 
+                       (long)fusionData.heart_rate, 
+                       (long)fusionData.blood_oxygen);
+            }
+            else
+            {
+                printf("等待有效信号...\r\n");
+            }
+            
+            printf("----------------------------------------\r\n");
+
+       vTaskDelay(100);
+
+    }
 }

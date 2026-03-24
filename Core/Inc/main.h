@@ -31,12 +31,41 @@ extern "C" {
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "cmsis_os.h"
+#include "adc.h"
+#include "dma.h"
+#include "i2c.h"
+#include "tim.h"
+#include "usart.h"
+#include "gpio.h"
+#include "MPU6050.h"
+#include "MAX30102.h"
+#include <stdlib.h>
+#include "stdio.h"
+#include <string.h>
+#include "MY_Tasks.h"
+#include "cmsis_os.h"      // 使用CMSIS-RTOS API
+#include "FreeRTOS.h"
+#include "task.h"
+#include <stdint.h>
+#include <stdbool.h>
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
-
+typedef struct {
+    // MAX30102数据
+    int32_t heart_rate;
+    int32_t blood_oxygen;
+    uint8_t hr_valid;
+    uint8_t spo2_valid;
+    
+    // MPU6050数据（你需要的部分）
+    float accel_g[3];
+    float gyro_dps[3];
+    
+   // uint32_t timestamp;
+} FusionData_t;
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/
