@@ -5,7 +5,34 @@
 
 
 extern osMessageQueueId_t MAX30102_QueueHandle;
+/* USER CODE BEGIN 0 */
+#define AXI_SRAM_BASE 0x24000000
+volatile uint16_t *adc_buffer = (volatile uint16_t*)AXI_SRAM_BASE;
 
+void ADC_DMA_Task(void *argument)
+{
+    (void)argument;
+    
+    // 初始化缓冲区
+    *adc_buffer = 0;
+    SCB_CleanDCache_by_Addr((uint32_t*)adc_buffer, sizeof(uint16_t));
+    
+    // ADC校准
+    HAL_ADCEx_Calibration_Start(&hadc1, ADC_CALIB_OFFSET_LINEARITY, ADC_SINGLE_ENDED);
+    
+    // 启动DMA
+    HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, 1);
+    
+    while(1)
+    {
+        SCB_CleanDCache_by_Addr((uint32_t*)adc_buffer, sizeof(uint16_t));
+        
+        printf("ADC: %u\r\n", (unsigned int)*adc_buffer);
+        
+        osDelay(50);  // 采样间隔
+    }
+}
+/* USER CODE END 0 */
 void MAX30102_Tasks(void *argument)
 {
     (void)argument;  // 消除未使用参数的警告

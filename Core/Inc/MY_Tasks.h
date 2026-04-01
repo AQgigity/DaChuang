@@ -22,6 +22,7 @@ typedef struct {
   */
 void MAX30102_Tasks(void *argument);
 void FusionTasks(void *argument);
+void ADC_DMA_Task(void *argument);
 extern osMessageQueueId_t MAX30102_QueueHandle;
 
 

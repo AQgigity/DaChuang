@@ -28,6 +28,12 @@ extern UART_HandleTypeDef huart1;
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
+osThreadId_t ADCDMATaskHandle;
+const osThreadAttr_t ADCDMATask_attributes = {
+  .name = "ADCDMATask",
+  .stack_size = 512 * 4,
+  .priority = (osPriority_t) osPriorityNormal2,
+};
 /* USER CODE END Variables */
 /* Definitions for MPUT6050Task */
 osThreadId_t MPUT6050TaskHandle;
@@ -83,27 +89,30 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE END RTOS_SEMAPHORES */
 
   /* USER CODE BEGIN RTOS_TIMERS */
-  //要注意队列如果是结构体创建时要注意如sizeof(HeartRateData_t)
+  //要注意队列如果是结构体创建时要注意如sizeof(HeartRateData_t)/
   /* USER CODE END RTOS_TIMERS */
 
   /* Create the queue(s) */
   /* creation of MAX30102_Queue */
-  MAX30102_QueueHandle = osMessageQueueNew (16,sizeof(HeartRateData_t), &MAX30102_Queue_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
+   // MAX30102_QueueHandle = osMessageQueueNew (16,sizeof(HeartRateData_t), &MAX30102_Queue_attributes); 
+     //要注意队列如果是结构体创建时要注意如sizeof(HeartRateData_t)
+
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
   /* creation of MPUT6050Task */
-  MPUT6050TaskHandle = osThreadNew(MPUT6050_Task, NULL, &MPUT6050Task_attributes);
+ // MPUT6050TaskHandle = osThreadNew(MPUT6050_Task, NULL, &MPUT6050Task_attributes);
 
   /* creation of MAX30102_Task */
-  MAX30102_TaskHandle = osThreadNew(MAX30102_Tasks, NULL, &MAX30102_Task_attributes);
+  //MAX30102_TaskHandle = osThreadNew(MAX30102_Tasks, NULL, &MAX30102_Task_attributes);
 
   /* creation of Fusion_Task */
- Fusion_TaskHandle = osThreadNew(FusionTasks, NULL, &Fusion_Task_attributes);
+ //Fusion_TaskHandle = osThreadNew(FusionTasks, NULL, &Fusion_Task_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
+  ADCDMATaskHandle = osThreadNew(ADC_DMA_Task, NULL, &ADCDMATask_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
