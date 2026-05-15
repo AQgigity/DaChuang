@@ -78,12 +78,9 @@ static void sensor_task(void *arg)
     while (1) {
         sample_count++;
 
-        /* 读取FSR402数据 */
-        fsr402_data_t fsr_data;
-        if (fsr402_read(&fsr_data) == ESP_OK) {
-            ESP_LOGI(TAG_MAIN, "[%ld] FSR402: Raw=%4d, Voltage=%5.0fmV, Pressure=%5.2fkg",
-                     sample_count, fsr_data.raw_value, fsr_data.voltage_mv, fsr_data.pressure_kg);
-        }
+        /* 读取FSR402按压状态 */
+        bool pressed = fsr402_is_pressed();
+        ESP_LOGI(TAG_MAIN, "[%ld] FSR402: %d", sample_count, pressed ? 1 : 0);
 
         /* 读取MPU6050数据 */
         mpu6050_data_t mpu_data;
@@ -109,7 +106,7 @@ void app_main(void)
     ESP_LOGI(TAG_MAIN, "CPU cores: %d", portNUM_PROCESSORS);
     ESP_LOGI(TAG_MAIN, "");
     ESP_LOGI(TAG_MAIN, "Sensor Configuration:");
-    ESP_LOGI(TAG_MAIN, "  FSR402: ADC1_CH0 (GPIO1)");
+    ESP_LOGI(TAG_MAIN, "  FSR402: ADC1_CH4 (GPIO5) - switch mode, threshold=%d", FSR402_PRESS_THRESHOLD);
     ESP_LOGI(TAG_MAIN, "  MPU6050: I2C0 (SDA=GPIO8, SCL=GPIO9, Addr=0x68)");
     ESP_LOGI(TAG_MAIN, "");
 
