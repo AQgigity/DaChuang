@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #ifndef FSR402_PRESS_THRESHOLD
-#define FSR402_PRESS_THRESHOLD  2000
+#define FSR402_PRESS_THRESHOLD  800
 #endif
 
 #define TAG_FSR402   "FSR402"

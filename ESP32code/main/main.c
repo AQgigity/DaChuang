@@ -1,11 +1,12 @@
 /**
  * @file main.c
- * @brief ESP32-S3 NimBLE UART-over-BLE (Phase 1: 纯蓝牙功能验证)
+ * @brief ESP32-S3 NimBLE UART-over-BLE + 传感器融合 (50Hz 高频采集)
  *
- * 创建一个 Nordic UART Service (NUS) 风格的 BLE 服务：
+ * Nordic UART Service (NUS) BLE 服务：
  *   - RX 特征 (Write): 接收手机端指令 ('r' 启动, 's' 停止)
- *   - TX 特征 (Notify): 推送模拟 CSV 数据
- *   - MTU 自动协商，支持 ~50 字节数据包
+ *   - TX 特征 (Notify): 推送 50Hz 传感器 CSV 数据
+ *   - 传感器: MPU6050 (IMU) + FSR402 (足压)
+ *   - CSV 格式: timestamp,ax,ay,az,gx,gy,gz,pressure
  */
 
 #include <stdio.h>
@@ -23,6 +24,10 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 #include "host/ble_att.h"
+
+/* 传感器驱动 */
+#include "mpu6050.h"
+#include "fsr402.h"
 
 /* ==================== 常量定义 ==================== */
 
@@ -53,6 +58,7 @@ static volatile bool g_task_running = false;
 static TaskHandle_t g_sim_task_handle = NULL;
 
 static char tx_buf[64];
+static mpu6050_handle_t g_mpu6050_handle = {0};
 
 /* ==================== 前向声明 ==================== */
 
@@ -62,7 +68,7 @@ static int ble_uart_rx_write(uint16_t conn_handle, uint16_t attr_handle,
                              struct ble_gatt_access_ctxt *ctxt, void *arg);
 static int ble_uart_tx_access(uint16_t conn_handle, uint16_t attr_handle,
                               struct ble_gatt_access_ctxt *ctxt, void *arg);
-static void sim_data_task(void *arg);
+static void sensor_data_task(void *arg);
 static void ble_on_reset(int reason);
 static void ble_on_sync(void);
 static void nimble_host_task(void *param);
@@ -129,10 +135,10 @@ static int ble_uart_rx_write(uint16_t conn_handle, uint16_t attr_handle,
     if (len >= 1) {
         switch (cmd[0]) {
         case 'r':
-            ESP_LOGI(TAG, "Recv R: Start");
+            ESP_LOGI(TAG, "Recv R: Start sensor stream");
             if (!g_task_running) {
                 g_task_running = true;
-                xTaskCreate(sim_data_task, "sim_data", 4096, NULL, 5,
+                xTaskCreate(sensor_data_task, "sensor_data", 8192, NULL, 5,
                             &g_sim_task_handle);
             }
             break;
@@ -294,32 +300,47 @@ static void ble_uart_send_line(const char *data, int len)
     }
 }
 
-/* ==================== 模拟数据任务 ==================== */
+/* ==================== 传感器数据任务 (50Hz) ==================== */
 
-static void sim_data_task(void *arg)
+static void sensor_data_task(void *arg)
 {
     uint32_t timestamp = 0;
-    bool pressure_toggle = false;
+    TickType_t last_wake = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(20);  /* 50Hz */
 
-    ESP_LOGI(TAG, "Simulated data task started");
+    ESP_LOGI(TAG, "Sensor data task started (50Hz)");
 
     while (g_task_running) {
+        /* 读取 FSR402 */
+        int pressure = fsr402_is_pressed() ? 1 : 0;
+
+        /* 读取 MPU6050 */
+        float ax = 0, ay = 0, az = 0, gx = 0, gy = 0, gz = 0;
+        mpu6050_data_t mpu_data;
+        if (mpu6050_read_data(&g_mpu6050_handle, &mpu_data) == ESP_OK) {
+            ax = mpu_data.accel_g[0];
+            ay = mpu_data.accel_g[1];
+            az = mpu_data.accel_g[2];
+            gx = mpu_data.gyro_dps[0];
+            gy = mpu_data.gyro_dps[1];
+            gz = mpu_data.gyro_dps[2];
+        }
+
+        /* 组装 CSV */
         int len = snprintf(tx_buf, sizeof(tx_buf),
-                           "%lu,1.0,2.0,3.0,0.1,0.2,0.3,%d\n",
+                           "%lu,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d\n",
                            (unsigned long)timestamp,
-                           pressure_toggle ? 1 : 0);
+                           ax, ay, az, gx, gy, gz, pressure);
 
         if (len > 0 && len < (int)sizeof(tx_buf)) {
             ble_uart_send_line(tx_buf, len);
         }
 
-        timestamp += 500;
-        pressure_toggle = !pressure_toggle;
-
-        vTaskDelay(pdMS_TO_TICKS(500));
+        timestamp += 20;
+        vTaskDelayUntil(&last_wake, period);
     }
 
-    ESP_LOGI(TAG, "Simulated data task stopping");
+    ESP_LOGI(TAG, "Sensor data task stopping");
     g_sim_task_handle = NULL;
     vTaskDelete(NULL);
 }
@@ -392,4 +413,22 @@ void app_main(void)
     nimble_port_freertos_init(nimble_host_task);
 
     ESP_LOGI(TAG, "BLE stack initialized, waiting for sync...");
+
+    /* 8. 初始化 MPU6050 */
+    if (mpu6050_init(&g_mpu6050_handle) != ESP_OK) {
+        ESP_LOGE(TAG, "MPU6050 init failed!");
+    } else {
+        ESP_LOGI(TAG, "MPU6050 initialized");
+    }
+
+    /* 9. 初始化 FSR402 */
+    fsr402_config_t fsr_cfg = {
+        .channel = ADC_CHANNEL_4,
+        .atten   = ADC_ATTEN_DB_12,
+    };
+    if (fsr402_init(&fsr_cfg) != ESP_OK) {
+        ESP_LOGE(TAG, "FSR402 init failed!");
+    } else {
+        ESP_LOGI(TAG, "FSR402 initialized");
+    }
 }
