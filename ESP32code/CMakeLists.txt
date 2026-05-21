@@ -2,5 +2,8 @@
 # CMakeLists in this exact order for cmake to work correctly
 cmake_minimum_required(VERSION 3.16)
 
+# Exclude esp_lcd — not used, and GCC 14.2.0 ICEs on esp_lcd_panel_rgb.c
+set(EXCLUDE_COMPONENTS esp_lcd)
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(ESP32_project)
