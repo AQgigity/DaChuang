@@ -72,6 +72,14 @@ static mpu6050_handle_t g_mpu6050_handle = {0};
 static float ei_buf[EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE];
 static SemaphoreHandle_t ei_sem = NULL;
 
+/* 步频 (Cadence) 检测状态 */
+static bool       cadence_prev_pressed = false;
+static TickType_t cadence_last_step_tick = 0;
+static float      cadence_spm_history[5] = {0};
+static int        cadence_spm_idx = 0;
+static int        cadence_spm_count = 0;
+static volatile float cadence_avg_spm = 0.0f;
+
 /* ==================== 前向声明 ==================== */
 
 static void ble_app_advertise(void);
@@ -324,6 +332,18 @@ static int ei_signal_get_data(size_t offset, size_t length, float *out_ptr)
     return 0;
 }
 
+/* ==================== 标签中文映射 ==================== */
+
+static const char *label_to_cn(const char *label)
+{
+    if (strcmp(label, "jump")  == 0) return "跳";
+    if (strcmp(label, "ready") == 0) return "准备";
+    if (strcmp(label, "run")   == 0) return "跑";
+    if (strcmp(label, "still") == 0) return "静止";
+    if (strcmp(label, "walk")  == 0) return "走";
+    return label;
+}
+
 /* ==================== 推理任务 ==================== */
 
 static void inference_task(void *arg)
@@ -349,10 +369,16 @@ static void inference_task(void *arg)
                     }
                 }
 
+                float spm = cadence_avg_spm;
+                if (strcmp(best_label, "still") == 0 || strcmp(best_label, "ready") == 0) {
+                    spm = 0.0f;
+                    cadence_avg_spm = 0.0f;
+                }
+
                 char result_buf[64];
                 int len = snprintf(result_buf, sizeof(result_buf),
-                                   "Result: %s, Score: %.2f\n",
-                                   best_label, best_score);
+                                   "行为：%s，步频：%d\n",
+                                   label_to_cn(best_label), (int)spm);
                 if (len > 0 && len < (int)sizeof(result_buf)) {
                     ble_uart_send_line(result_buf, len);
                 }
@@ -383,8 +409,26 @@ static void sensor_data_task(void *arg)
     ESP_LOGI(TAG, "Sensor data task started (50Hz)");
 
     while (g_task_running) {
-        /* 读取 FSR402 */
-        int pressure = fsr402_is_pressed() ? 1 : 0;
+        /* 读取 FSR402 + 步频上升沿检测 */
+        bool pressed = fsr402_is_pressed();
+        if (pressed && !cadence_prev_pressed) {
+            TickType_t now = xTaskGetTickCount();
+            TickType_t elapsed = now - cadence_last_step_tick;
+            if (elapsed >= pdMS_TO_TICKS(300) && cadence_last_step_tick != 0) {
+                float interval_s = (float)elapsed * portTICK_PERIOD_MS / 1000.0f;
+                float spm = 60.0f / interval_s;
+                if (spm >= 40.0f && spm <= 220.0f) {
+                    cadence_spm_history[cadence_spm_idx] = spm;
+                    cadence_spm_idx = (cadence_spm_idx + 1) % 5;
+                    if (cadence_spm_count < 5) cadence_spm_count++;
+                    float sum = 0;
+                    for (int i = 0; i < cadence_spm_count; i++) sum += cadence_spm_history[i];
+                    cadence_avg_spm = sum / cadence_spm_count;
+                }
+            }
+            cadence_last_step_tick = now;
+        }
+        cadence_prev_pressed = pressed;
 
         /* 读取 MPU6050 */
         float ax = 0, ay = 0, az = 0, gx = 0, gy = 0, gz = 0;
@@ -406,7 +450,7 @@ static void sensor_data_task(void *arg)
                      - EI_CLASSIFIER_RAW_SAMPLES_PER_FRAME;
         dst[0] = ax; dst[1] = ay; dst[2] = az;
         dst[3] = gx; dst[4] = gy; dst[5] = gz;
-        dst[6] = (float)pressure;
+        dst[6] = (float)pressed;
 
         /* 每 5 组新数据唤醒推理任务 */
         sample_count++;
@@ -417,6 +461,14 @@ static void sensor_data_task(void *arg)
 
         vTaskDelayUntil(&last_wake, period);
     }
+
+    /* 重置步频状态 */
+    cadence_prev_pressed = false;
+    cadence_last_step_tick = 0;
+    cadence_spm_count = 0;
+    cadence_spm_idx = 0;
+    cadence_avg_spm = 0.0f;
+    memset(cadence_spm_history, 0, sizeof(cadence_spm_history));
 
     ESP_LOGI(TAG, "Sensor data task stopping");
     g_sim_task_handle = NULL;
