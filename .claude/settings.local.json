@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find \"E:/esp32idf\" -name \"activate\" -path \"*/Scripts/*\" 2>/dev/null | head -5; find \"E:/esp32idf\" -name \"activate\" -path \"*/bin/*\" 2>/dev/null | head -5)",
+      "Read(//e/esp32idf/**)"
+    ]
+  }
+}
