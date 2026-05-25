@@ -6,6 +6,9 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "nvs_flash.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "mqtt_client.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
@@ -22,6 +25,20 @@ static const char *TAG = "WATCH";
 #define ANKLE_DEVICE_NAME   "ESP32_Gait_Gatt"
 #define FUSION_TASK_STACK   4096
 #define FUSION_TASK_PRIO    2
+
+/* ==================== WiFi / MQTT 配置 ==================== */
+
+#define WIFI_SSID      "无敌大菠萝"
+#define WIFI_PASS      "55555555"
+#define MQTT_URI       "mqtt://mqtts.heclouds.com:1883"
+#define MQTT_CLIENT_ID "TEST1"
+#define MQTT_USERNAME  "b2aLMZ812F"
+#define MQTT_PASSWORD  "version=2018-10-31&res=products%2Fb2aLMZ812F%2Fdevices%2FTEST1&et=1905932926&method=md5&sign=tgOEowtK7HHgxR5siXZQBg%3D%3D"
+#define ONENET_TOPIC   "$sys/b2aLMZ812F/TEST1/thing/property/post"
+#define MQTT_SEND_INTERVAL_MS 2000
+
+/* 调试开关：1 = 只测 WiFi+MQTT，跳过 BLE */
+#define WIFI_ONLY_TEST  1
 
 /* Nordic UART Service: 6E400001-B5A3-F393-E0A9-E50E24DCCA9E */
 static const ble_uuid128_t nus_svc_uuid = BLE_UUID128_INIT(
@@ -77,13 +94,24 @@ static volatile float g_current_bpm = 0.0f;
 static volatile float g_current_temp = 0.0f;
 static volatile float g_current_press = 0.0f;
 
+/* 最新脚踝数据（供 MQTT 读取，由 fusion task 更新） */
+static volatile ankle_data_t g_latest_ankle = {0};
+
 /* BLE 数据拼接缓冲区 */
 static char g_rx_buf[128];
 static int  g_rx_len = 0;
 
+/* WiFi / MQTT 状态 */
+static esp_mqtt_client_handle_t g_mqtt_client = NULL;
+static volatile bool g_wifi_connected = false;
+static volatile bool g_mqtt_connected = false;
+
 /* 前向声明 */
 static void ble_start_scan(void);
 static int ble_central_gap_event(struct ble_gap_event *event, void *arg);
+static void wifi_init(void);
+static void mqtt_init(void);
+static void wifi_start_task(void *arg);
 
 /* ==================== NVS 初始化 ==================== */
 
@@ -386,6 +414,9 @@ static int ble_central_gap_event(struct ble_gap_event *event, void *arg)
         g_ankle_conn_handle = event->connect.conn_handle;
         g_ankle_connected = true;
 
+        /* BLE 连接稳定后延迟启动 WiFi（避免共存冲突） */
+        xTaskCreate(wifi_start_task, "wifi_start", 4096, NULL, 3, NULL);
+
         /* 启动 NUS 服务发现 */
         int rc = ble_gattc_disc_svc_by_uuid(g_ankle_conn_handle,
                                              &nus_svc_uuid.u,
@@ -445,6 +476,263 @@ static void nimble_host_task(void *param)
     nimble_port_deinit();
 }
 
+/* ==================== WiFi ==================== */
+
+static void wifi_event_handler(void *arg, esp_event_base_t event_base,
+                               int32_t event_id, void *event_data)
+{
+    if (event_base == WIFI_EVENT) {
+        switch (event_id) {
+        case WIFI_EVENT_STA_START:
+            ESP_LOGI(TAG, "WiFi STA started, connecting...");
+            esp_wifi_connect();
+            break;
+        case WIFI_EVENT_STA_CONNECTED:
+            ESP_LOGI(TAG, "WiFi connected to AP");
+            break;
+        case WIFI_EVENT_STA_DISCONNECTED:
+            ESP_LOGW(TAG, "WiFi disconnected, reconnecting...");
+            g_wifi_connected = false;
+            g_mqtt_connected = false;
+            esp_wifi_connect();
+            break;
+        default:
+            break;
+        }
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+        ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        g_wifi_connected = true;
+
+        /* 获取 IP 后启动 MQTT */
+        if (g_mqtt_client != NULL) {
+            esp_mqtt_client_start(g_mqtt_client);
+        }
+    }
+}
+
+static void wifi_init(void)
+{
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    esp_event_handler_instance_t inst_any_id, inst_got_ip;
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, &inst_any_id));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, &inst_got_ip));
+
+    wifi_config_t wifi_cfg = {
+        .sta = {
+            .ssid = WIFI_SSID,
+            .password = WIFI_PASS,
+        },
+    };
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGI(TAG, "WiFi init done, SSID: %s", WIFI_SSID);
+}
+
+/* ==================== MQTT ==================== */
+
+static void mqtt_event_handler(void *arg, esp_event_base_t event_base,
+                               int32_t event_id, void *event_data)
+{
+    esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)event_data;
+
+    switch (event_id) {
+    case MQTT_EVENT_CONNECTED:
+        ESP_LOGI(TAG, "MQTT connected to OneNET");
+        g_mqtt_connected = true;
+        break;
+    case MQTT_EVENT_DISCONNECTED:
+        ESP_LOGW(TAG, "MQTT disconnected");
+        g_mqtt_connected = false;
+        break;
+    case MQTT_EVENT_ERROR:
+        ESP_LOGE(TAG, "MQTT error type: %d", event->error_handle->error_type);
+        break;
+    default:
+        break;
+    }
+}
+
+static void mqtt_init(void)
+{
+    esp_mqtt_client_config_t mqtt_cfg = {
+        .broker.address.uri = MQTT_URI,
+        .credentials.client_id = MQTT_CLIENT_ID,
+        .credentials.username = MQTT_USERNAME,
+        .credentials.authentication.password = MQTT_PASSWORD,
+    };
+
+    g_mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
+    esp_mqtt_client_register_event(g_mqtt_client, ESP_EVENT_ANY_ID,
+                                   mqtt_event_handler, NULL);
+    /* 不在这里 start，等 WiFi 获取 IP 后再 start */
+    ESP_LOGI(TAG, "MQTT client init done");
+}
+
+/* ==================== OneNET 数据打包 ==================== */
+
+static int status_to_enum(const char *action)
+{
+    if (strcmp(action, "走") == 0 || strcmp(action, "walk") == 0) return 0;
+    if (strcmp(action, "跑") == 0 || strcmp(action, "run") == 0) return 1;
+    if (strcmp(action, "静止") == 0 || strcmp(action, "still") == 0) return 2;
+    if (strcmp(action, "准备") == 0 || strcmp(action, "ready") == 0) return 3;
+    if (strcmp(action, "跳") == 0 || strcmp(action, "jump") == 0) return 4;
+    return 2; /* 默认静止 */
+}
+
+static int onenet_build_payload(char *buf, int buf_size,
+                                 float temp, float press, float hr,
+                                 const char *action, int cadence)
+{
+    static int msg_id = 0;
+    int status_val = status_to_enum(action);
+    int len = snprintf(buf, buf_size,
+        "{"
+        "\"id\":\"%d\","
+        "\"version\":\"1.0\","
+        "\"params\":{"
+        "\"heart_rate\":{\"value\":%d},"
+        "\"Temp\":{\"value\":%.1f},"
+        "\"barometric\":{\"value\":%.2f},"
+        "\"status\":{\"value\":%d},"
+        "\"step_frequency\":{\"value\":%d}"
+        "}"
+        "}",
+        ++msg_id, (int)hr, temp, press, status_val, cadence);
+
+    return (len > 0 && len < buf_size) ? len : -1;
+}
+
+/* ==================== MQTT 上报任务 ==================== */
+
+/* ==================== 延迟启动 WiFi（BLE 共存优化） ==================== */
+
+static SemaphoreHandle_t g_cccd_sem = NULL;
+
+static int ble_cccd_write_cb(uint16_t conn_handle,
+                             const struct ble_gatt_error *error,
+                             struct ble_gatt_attr *attr, void *arg)
+{
+    if (error->status == 0) {
+        ESP_LOGI(TAG, "CCCD write OK (notify %s)",
+                 arg == NULL ? "disabled" : "enabled");
+    } else {
+        ESP_LOGW(TAG, "CCCD write failed: %d", error->status);
+    }
+    if (g_cccd_sem) xSemaphoreGive(g_cccd_sem);
+    return 0;
+}
+
+static void wifi_start_task(void *arg)
+{
+    /* 等待 2 秒让 BLE 连接稳定 */
+    vTaskDelay(pdMS_TO_TICKS(2000));
+
+    /* 暂停 BLE 通知，给 WiFi 腾出射频 */
+    if (g_ankle_conn_handle != BLE_HS_CONN_HANDLE_NONE &&
+        g_nus_tx_val_handle != 0) {
+        uint16_t cccd_handle = g_nus_tx_val_handle + 1;
+        uint16_t notify_dis = 0x0000;
+        int rc = ble_gattc_write_flat(g_ankle_conn_handle, cccd_handle,
+                                       &notify_dis, sizeof(notify_dis),
+                                       ble_cccd_write_cb, NULL);
+        if (rc == 0 && g_cccd_sem) {
+            xSemaphoreTake(g_cccd_sem, pdMS_TO_TICKS(1000));
+        }
+        ESP_LOGI(TAG, "BLE notifications paused for WiFi");
+    }
+
+    /* 启动 WiFi */
+    wifi_init();
+    mqtt_init();
+
+    /* 等待 WiFi 连接成功（最多 15 秒） */
+    for (int i = 0; i < 150 && !g_wifi_connected; i++) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    if (g_wifi_connected) {
+        ESP_LOGI(TAG, "WiFi connected, re-enabling BLE notifications");
+        /* 恢复 BLE 通知 */
+        if (g_ankle_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+            uint16_t cccd_handle = g_nus_tx_val_handle + 1;
+            uint16_t notify_en = 0x0001;
+            int rc = ble_gattc_write_flat(g_ankle_conn_handle, cccd_handle,
+                                           &notify_en, sizeof(notify_en),
+                                           ble_cccd_write_cb, (void *)1);
+            if (rc == 0 && g_cccd_sem) {
+                xSemaphoreTake(g_cccd_sem, pdMS_TO_TICKS(1000));
+            }
+        }
+    } else {
+        ESP_LOGW(TAG, "WiFi connect timeout, re-enabling BLE anyway");
+        if (g_ankle_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+            uint16_t cccd_handle = g_nus_tx_val_handle + 1;
+            uint16_t notify_en = 0x0001;
+            ble_gattc_write_flat(g_ankle_conn_handle, cccd_handle,
+                                  &notify_en, sizeof(notify_en),
+                                  ble_cccd_write_cb, (void *)1);
+        }
+    }
+
+    ESP_LOGI(TAG, "WiFi + MQTT init complete");
+    vTaskDelete(NULL);
+}
+
+static void mqtt_upload_task(void *arg)
+{
+    char payload[320];
+    TickType_t last_wake = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(MQTT_SEND_INTERVAL_MS);
+
+    while (1) {
+        vTaskDelayUntil(&last_wake, period);
+
+        if (!g_mqtt_connected) {
+            continue;
+        }
+
+        /* 读取最新融合数据 */
+        float temp = g_current_temp;
+        float press = g_current_press;
+        float hr = g_current_bpm;
+        ankle_data_t latest = g_latest_ankle;
+
+        const char *action = latest.valid ? latest.action : "静止";
+        int cadence = latest.valid ? latest.cadence_spm : 0;
+
+        int len = onenet_build_payload(payload, sizeof(payload),
+                                        temp, press, hr, action, cadence);
+        if (len <= 0) {
+            ESP_LOGE(TAG, "Payload build failed");
+            continue;
+        }
+
+        /* 打印 payload 用于调试 */
+        ESP_LOGI(TAG, "Payload[%d]: %.*s", len, len, payload);
+
+        int msg_id = esp_mqtt_client_publish(g_mqtt_client, ONENET_TOPIC,
+                                              payload, len, 1, 0);
+        if (msg_id >= 0) {
+            ESP_LOGI(TAG, "MQTT publish OK: %s HR=%.0f T=%.1f P=%.1f C=%d",
+                     action, hr, temp, press, cadence);
+        } else {
+            ESP_LOGW(TAG, "MQTT publish failed (ret=%d)", msg_id);
+        }
+    }
+}
+
 /* ==================== 数据融合任务 ==================== */
 
 static void data_fusion_task(void *arg)
@@ -455,6 +743,7 @@ static void data_fusion_task(void *arg)
     while (1) {
         if (xQueueReceive(g_ankle_data_queue, &ankle, pdMS_TO_TICKS(1000)) == pdTRUE) {
             wait_cnt = 0;
+            g_latest_ankle = ankle;  /* 更新共享变量供 MQTT 读取 */
             ESP_LOGI("FUSION", "[%lu ms] Action=%s Cadence=%dspm "
                      "HR=%.1fbpm Temp=%.1fC Press=%.1fhPa",
                      (unsigned long)ankle.timestamp_ms,
@@ -481,7 +770,7 @@ void app_main(void)
     ESP_LOGI(TAG, "  Smart Sports Watch Starting...");
     ESP_LOGI(TAG, "========================================");
 
-    /* 1. NVS（NimBLE 需要） */
+    /* 1. NVS（NimBLE 和 WiFi 都需要） */
     nvs_init();
 
     /* 2. I2C 总线 + 传感器 */
@@ -497,7 +786,9 @@ void app_main(void)
 
     /* 3. 创建数据交换队列 */
     g_ankle_data_queue = xQueueCreate(4, sizeof(ankle_data_t));
+    g_cccd_sem = xSemaphoreCreateBinary();
 
+#if !WIFI_ONLY_TEST
     /* 4. 初始化 NimBLE */
     int rc = nimble_port_init();
     if (rc != ESP_OK) {
@@ -520,6 +811,7 @@ void app_main(void)
 
     /* 7. 启动 NimBLE Host 任务 */
     nimble_port_freertos_init(nimble_host_task);
+#endif
 
     /* 8. 传感器任务 */
     xTaskCreate(environment_sensor_task, "env_sensor", 4096, &g_bme280, 5, NULL);
@@ -529,5 +821,17 @@ void app_main(void)
     xTaskCreate(data_fusion_task, "data_fusion", FUSION_TASK_STACK, NULL,
                 FUSION_TASK_PRIO, NULL);
 
-    ESP_LOGI(TAG, "All tasks created. Scanning for ankle...");
+    /* 10. MQTT 上报任务（优先级最低，等待 MQTT 连接后自动发送） */
+    xTaskCreate(mqtt_upload_task, "mqtt_upload", 4096, NULL, 1, NULL);
+
+#if WIFI_ONLY_TEST
+    /* WiFi 测试模式：直接启动 WiFi + MQTT */
+    ESP_LOGI(TAG, "WIFI_ONLY_TEST mode, starting WiFi directly...");
+    wifi_init();
+    mqtt_init();
+#else
+    /* WiFi + MQTT 在 BLE 连接脚踝后自动启动（wifi_start_task） */
+#endif
+
+    ESP_LOGI(TAG, "All tasks created.");
 }
