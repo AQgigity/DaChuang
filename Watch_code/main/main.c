@@ -38,7 +38,7 @@ static const char *TAG = "WATCH";
 #define MQTT_SEND_INTERVAL_MS 2000
 
 /* 调试开关：1 = 只测 WiFi+MQTT，跳过 BLE */
-#define WIFI_ONLY_TEST  1
+#define WIFI_ONLY_TEST  0
 
 /* Nordic UART Service: 6E400001-B5A3-F393-E0A9-E50E24DCCA9E */
 static const ble_uuid128_t nus_svc_uuid = BLE_UUID128_INIT(
