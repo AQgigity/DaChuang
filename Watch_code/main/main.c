@@ -35,6 +35,7 @@ static const char *TAG = "WATCH";
 #define MQTT_USERNAME  "b2aLMZ812F"
 #define MQTT_PASSWORD  "version=2018-10-31&res=products%2Fb2aLMZ812F%2Fdevices%2FTEST1&et=1905932926&method=md5&sign=tgOEowtK7HHgxR5siXZQBg%3D%3D"
 #define ONENET_TOPIC   "$sys/b2aLMZ812F/TEST1/thing/property/post"
+#define ONENET_SET_TOPIC "$sys/b2aLMZ812F/TEST1/thing/property/set"
 #define MQTT_SEND_INTERVAL_MS 2000
 
 /* 调试开关：1 = 只测 WiFi+MQTT，跳过 BLE */
@@ -105,6 +106,7 @@ static int  g_rx_len = 0;
 static esp_mqtt_client_handle_t g_mqtt_client = NULL;
 static volatile bool g_wifi_connected = false;
 static volatile bool g_mqtt_connected = false;
+static volatile bool g_upload_enabled = false;  /* 云平台上传开关 */
 
 /* 前向声明 */
 static void ble_start_scan(void);
@@ -550,11 +552,71 @@ static void mqtt_event_handler(void *arg, esp_event_base_t event_base,
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "MQTT connected to OneNET");
         g_mqtt_connected = true;
+        /* 订阅属性设置 topic */
+        esp_mqtt_client_subscribe(g_mqtt_client, ONENET_SET_TOPIC, 1);
+        ESP_LOGI(TAG, "Subscribed to: %s", ONENET_SET_TOPIC);
         break;
     case MQTT_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "MQTT disconnected");
         g_mqtt_connected = false;
         break;
+    case MQTT_EVENT_DATA: {
+        /* 检查是否是属性设置 topic */
+        char topic[128] = {0};
+        int topic_len = event->topic_len < (int)sizeof(topic) - 1 ?
+                        event->topic_len : (int)sizeof(topic) - 1;
+        memcpy(topic, event->topic, topic_len);
+
+        if (strcmp(topic, ONENET_SET_TOPIC) == 0) {
+            char payload[512] = {0};
+            int payload_len = event->data_len < (int)sizeof(payload) - 1 ?
+                              event->data_len : (int)sizeof(payload) - 1;
+            memcpy(payload, event->data, payload_len);
+
+            ESP_LOGI(TAG, "Received set cmd: %.*s", payload_len, payload);
+
+            /* 解析 control_switch 字段
+             * OneNET 格式: {"params":{"control_switch":true}} 或
+             *               {"control_switch":{"value":true}}
+             */
+            bool new_state = g_upload_enabled;
+            if (strstr(payload, "\"control_switch\"") != NULL) {
+                if (strstr(payload, ":true") != NULL) {
+                    new_state = true;
+                } else if (strstr(payload, ":false") != NULL) {
+                    new_state = false;
+                }
+                g_upload_enabled = new_state;
+                ESP_LOGI(TAG, ">>> Upload %s",
+                         new_state ? "ENABLED" : "DISABLED");
+
+                /* 回复 OneNET（否则平台报超时） */
+                char resp[128];
+                int resp_len = snprintf(resp, sizeof(resp),
+                    "{\"code\":200,\"msg\":\"success\","
+                    "\"data\":{\"control_switch\":%s}}",
+                    new_state ? "true" : "false");
+                esp_mqtt_client_publish(g_mqtt_client, ONENET_SET_TOPIC,
+                                        resp, resp_len, 1, 0);
+                ESP_LOGI(TAG, "Reply sent: %.*s", resp_len, resp);
+
+                /* 立即上报一次开关状态到物模型 */
+                if (g_mqtt_connected) {
+                    char status_buf[128];
+                    static int sw_id = 0;
+                    int slen = snprintf(status_buf, sizeof(status_buf),
+                        "{\"id\":\"sw%d\",\"version\":\"1.0\","
+                        "\"params\":{\"control_switch\":{\"value\":%s}}}",
+                        ++sw_id, new_state ? "true" : "false");
+                    esp_mqtt_client_publish(g_mqtt_client, ONENET_TOPIC,
+                                            status_buf, slen, 1, 0);
+                    ESP_LOGI(TAG, "Switch status reported: %s",
+                             new_state ? "true" : "false");
+                }
+            }
+        }
+        break;
+    }
     case MQTT_EVENT_ERROR:
         ESP_LOGE(TAG, "MQTT error type: %d", event->error_handle->error_type);
         break;
@@ -699,7 +761,7 @@ static void mqtt_upload_task(void *arg)
     while (1) {
         vTaskDelayUntil(&last_wake, period);
 
-        if (!g_mqtt_connected) {
+        if (!g_mqtt_connected || !g_upload_enabled) {
             continue;
         }
 
@@ -723,7 +785,7 @@ static void mqtt_upload_task(void *arg)
         ESP_LOGI(TAG, "Payload[%d]: %.*s", len, len, payload);
 
         int msg_id = esp_mqtt_client_publish(g_mqtt_client, ONENET_TOPIC,
-                                              payload, len, 1, 0);
+                                              payload, len, 0, 0);
         if (msg_id >= 0) {
             ESP_LOGI(TAG, "MQTT publish OK: %s HR=%.0f T=%.1f P=%.1f C=%d",
                      action, hr, temp, press, cadence);
