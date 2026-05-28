@@ -44,6 +44,16 @@ esp_err_t fsr402_deinit(void);
 bool fsr402_is_pressed(void);
 uint16_t fsr402_read_raw(void);
 
+/* Toe sensor (ADC_CHANNEL_0 / GPIO1) */
+#ifndef FSR402_TOE_ADC_CHANNEL
+#define FSR402_TOE_ADC_CHANNEL  ADC_CHANNEL_0   // GPIO1
+#endif
+
+esp_err_t fsr402_toe_init(adc_atten_t atten);
+esp_err_t fsr402_toe_deinit(void);
+bool      fsr402_toe_is_pressed(void);
+uint16_t  fsr402_toe_read_raw(void);
+
 #ifdef __cplusplus
 }
 #endif

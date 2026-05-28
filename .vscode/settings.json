@@ -1,3 +1,4 @@
 {
-    "cmake.sourceDirectory": "C:/Users/86157/Desktop/H743/DaChuang/ESP32code"
+    "cmake.sourceDirectory": "C:/Users/86157/Desktop/H743/DaChuang/ESP32code",
+    "idf.currentSetup": "E:\\esp32idf\\v5.4.3\\esp-idf"
 }

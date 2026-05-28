@@ -42,6 +42,9 @@ extern "C" {
 #define TAG "BLE_UART"
 #define DEVICE_NAME "ESP32_Gait_Gatt"
 
+/* 设为 1 启动时测试两个 FSR 传感器 ADC 值，测完改回 0 重新编译 */
+#define FSR_TEST_MODE 0
+
 /* Nordic UART Service UUID: 6E400001-B5A3-F393-E0A9-E50E24DCCA9E */
 static const ble_uuid128_t gatt_uart_svc_uuid =
     BLE_UUID128_INIT(0x9E, 0xCA, 0xDC, 0x24, 0x0E, 0xE5, 0xA9, 0xE0,
@@ -79,6 +82,13 @@ static float      cadence_spm_history[5] = {0};
 static int        cadence_spm_idx = 0;
 static int        cadence_spm_count = 0;
 static volatile float cadence_avg_spm = 0.0f;
+
+/* 步态发力检测状态 */
+static bool       gait_toe_prev_pressed = false;
+static TickType_t gait_t_heel_rise = 0;
+static TickType_t gait_t_toe_rise  = 0;
+static char       gait_style[32]   = "未发力";
+static int        gait_step_who_first = 0;  /* 0=未定, 1=heel先, 2=toe先 */
 
 /* ==================== 前向声明 ==================== */
 
@@ -375,10 +385,10 @@ static void inference_task(void *arg)
                     cadence_avg_spm = 0.0f;
                 }
 
-                char result_buf[64];
+                char result_buf[96];
                 int len = snprintf(result_buf, sizeof(result_buf),
-                                   "行为：%s，步频：%d\n",
-                                   label_to_cn(best_label), (int)spm);
+                                   "行为：%s，步频：%d，发力：%s\n",
+                                   label_to_cn(best_label), (int)spm, gait_style);
                 if (len > 0 && len < (int)sizeof(result_buf)) {
                     ble_uart_send_line(result_buf, len);
                 }
@@ -409,10 +419,16 @@ static void sensor_data_task(void *arg)
     ESP_LOGI(TAG, "Sensor data task started (50Hz)");
 
     while (g_task_running) {
-        /* 读取 FSR402 + 步频上升沿检测 */
-        bool pressed = fsr402_is_pressed();
-        if (pressed && !cadence_prev_pressed) {
+        /* 读取两个 FSR 传感器 */
+        bool heel_pressed = fsr402_is_pressed();
+        bool toe_pressed  = fsr402_toe_is_pressed();
+
+        /* ---- 上升沿检测：记录时间戳 + 步频 ---- */
+        if (heel_pressed && !cadence_prev_pressed) {
             TickType_t now = xTaskGetTickCount();
+            gait_t_heel_rise = now;
+
+            /* 步频计算 */
             TickType_t elapsed = now - cadence_last_step_tick;
             if (elapsed >= pdMS_TO_TICKS(300) && cadence_last_step_tick != 0) {
                 float interval_s = (float)elapsed * portTICK_PERIOD_MS / 1000.0f;
@@ -427,8 +443,37 @@ static void sensor_data_task(void *arg)
                 }
             }
             cadence_last_step_tick = now;
+
+            /* 更新 "双踩" 状态：Heel 刚起，Toe 已踩 → Toe 先 */
+            if (toe_pressed) {
+                gait_step_who_first = 2;
+            }
         }
-        cadence_prev_pressed = pressed;
+        cadence_prev_pressed = heel_pressed;
+
+        if (toe_pressed && !gait_toe_prev_pressed) {
+            gait_t_toe_rise = xTaskGetTickCount();
+
+            /* 更新 "双踩" 状态：Toe 刚起，Heel 已踩 → Heel 先 */
+            if (heel_pressed) {
+                gait_step_who_first = 1;
+            }
+        }
+        gait_toe_prev_pressed = toe_pressed;
+
+        /* ---- 持续发力状态更新 ---- */
+        if (!heel_pressed && !toe_pressed) {
+            gait_step_who_first = 0;
+            snprintf(gait_style, sizeof(gait_style), "未发力");
+        } else if (heel_pressed && !toe_pressed) {
+            gait_step_who_first = 1;
+            snprintf(gait_style, sizeof(gait_style), "后脚跟发力");
+        } else if (!heel_pressed && toe_pressed) {
+            gait_step_who_first = 2;
+            snprintf(gait_style, sizeof(gait_style), "前脚掌发力");
+        } else {
+            snprintf(gait_style, sizeof(gait_style), "全掌发力");
+        }
 
         /* 读取 MPU6050 */
         float ax = 0, ay = 0, az = 0, gx = 0, gy = 0, gz = 0;
@@ -450,7 +495,7 @@ static void sensor_data_task(void *arg)
                      - EI_CLASSIFIER_RAW_SAMPLES_PER_FRAME;
         dst[0] = ax; dst[1] = ay; dst[2] = az;
         dst[3] = gx; dst[4] = gy; dst[5] = gz;
-        dst[6] = (float)pressed;
+        dst[6] = (float)heel_pressed;
 
         /* 每 5 组新数据唤醒推理任务 */
         sample_count++;
@@ -469,6 +514,13 @@ static void sensor_data_task(void *arg)
     cadence_spm_idx = 0;
     cadence_avg_spm = 0.0f;
     memset(cadence_spm_history, 0, sizeof(cadence_spm_history));
+
+    /* 重置发力检测状态 */
+    gait_toe_prev_pressed = false;
+    gait_t_heel_rise = 0;
+    gait_t_toe_rise = 0;
+    gait_step_who_first = 0;
+    snprintf(gait_style, sizeof(gait_style), "未发力");
 
     ESP_LOGI(TAG, "Sensor data task stopping");
     g_sim_task_handle = NULL;
@@ -561,6 +613,29 @@ extern "C" void app_main(void)
     } else {
         ESP_LOGI(TAG, "FSR402 initialized");
     }
+
+    /* 9b. 初始化 FSR402 Toe */
+    if (fsr402_toe_init(ADC_ATTEN_DB_12) != ESP_OK) {
+        ESP_LOGE(TAG, "FSR402 toe init failed!");
+    } else {
+        ESP_LOGI(TAG, "FSR402 toe initialized");
+    }
+
+#if FSR_TEST_MODE
+    /* === FSR 传感器测试：打印两个传感器 ADC 原始值 === */
+    ESP_LOGW(TAG, "===== FSR TEST MODE: press heel/toe to verify =====");
+    for (int i = 0; i < 50; i++) {
+        uint16_t heel_raw = fsr402_read_raw();
+        uint16_t toe_raw  = fsr402_toe_read_raw();
+        bool heel_p = fsr402_is_pressed();
+        bool toe_p  = fsr402_toe_is_pressed();
+        ESP_LOGI(TAG, "[%2d] Heel: ADC=%4d (%s)  |  Toe: ADC=%4d (%s)",
+                 i, heel_raw, heel_p ? "PRESSED" : "-----",
+                 toe_raw,  toe_p  ? "PRESSED" : "-----");
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+    ESP_LOGW(TAG, "===== FSR TEST DONE, continuing normal boot =====");
+#endif
 
     /* 10. 创建推理信号量 */
     ei_sem = xSemaphoreCreateBinary();

@@ -11,6 +11,9 @@ static const char *TAG = TAG_FSR402;
 static adc_oneshot_unit_handle_t adc1_handle = NULL;
 static fsr402_config_t fsr_config = {0};
 
+static adc_channel_t toe_channel = FSR402_TOE_ADC_CHANNEL;
+static bool toe_initialized = false;
+
 esp_err_t fsr402_init(fsr402_config_t *config)
 {
     esp_err_t ret;
@@ -70,6 +73,54 @@ uint16_t fsr402_read_raw(void)
     int raw_value = 0;
     if (adc1_handle) {
         adc_oneshot_read(adc1_handle, fsr_config.channel, &raw_value);
+    }
+    return (uint16_t)raw_value;
+}
+
+esp_err_t fsr402_toe_init(adc_atten_t atten)
+{
+    if (!adc1_handle) {
+        ESP_LOGE(TAG, "FSR402 heel must be initialized before toe");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    adc_oneshot_chan_cfg_t channel_config = {
+        .atten = atten,
+        .bitwidth = ADC_BITWIDTH_12,
+    };
+    esp_err_t ret = adc_oneshot_config_channel(adc1_handle, toe_channel, &channel_config);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to config toe ADC channel: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    toe_initialized = true;
+    ESP_LOGI(TAG, "FSR402 toe initialized on ADC Channel %d, threshold=%d",
+             toe_channel, FSR402_PRESS_THRESHOLD);
+    return ESP_OK;
+}
+
+esp_err_t fsr402_toe_deinit(void)
+{
+    toe_initialized = false;
+    return ESP_OK;
+}
+
+bool fsr402_toe_is_pressed(void)
+{
+    int raw_value = 0;
+    if (!adc1_handle || !toe_initialized) {
+        return false;
+    }
+    adc_oneshot_read(adc1_handle, toe_channel, &raw_value);
+    return (raw_value < FSR402_PRESS_THRESHOLD);
+}
+
+uint16_t fsr402_toe_read_raw(void)
+{
+    int raw_value = 0;
+    if (adc1_handle && toe_initialized) {
+        adc_oneshot_read(adc1_handle, toe_channel, &raw_value);
     }
     return (uint16_t)raw_value;
 }

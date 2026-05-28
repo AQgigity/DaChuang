@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 步态分析/健康监测可穿戴设备固件（大学生创新创业项目"DaChuang"）。
 
 - **ESP32-S3** (`ESP32code/`) — ESP-IDF v5.4.3 + NimBLE，Nordic UART Service (NUS) 蓝牙通信。设备名：`ESP32_Gait_Gatt`。
-- **Watch_code/** — ESP-IDF v5.4.3，智能运动手表（BME280 环境传感器 + MAX30102 心率传感器）。
+- **Watch_code/** — ESP-IDF v5.4.3，智能运动手表（BME280 环境传感器 + MAX30102 心率传感器），BLE Central + WiFi + MQTT 上报 OneNET 云平台。
 
 当前功能：50Hz 采集 MPU6050（IMU 6轴）+ FSR402（足压），Edge Impulse 实时推理 5 类动作（jump/ready/run/still/walk），步频（Cadence）检测，BLE 推送中文识别结果。
 
@@ -55,7 +55,7 @@ ESP32code/
 
 ```
 Watch_code/
-  main/main.c                — 传感器任务入口
+  main/main.c                — 单文件：BLE Central + 传感器 + WiFi + MQTT + 云平台控制
   components/
     i2c_bus/                  — I2C 总线抽象（新 i2c_master API，SDA=GPIO5, SCL=GPIO4, 400kHz）
     bme280/                   — BME280/BMP280 驱动（I2C 0x76，forced mode，支持两种芯片自动检测）
@@ -64,15 +64,45 @@ Watch_code/
     UI/                       — SquareLine Studio 生成的 LVGL UI（3 个标签：HR/Temp/Press）
     lv_conf.h                 — LVGL 配置（16bit color, LV_COLOR_16_SWAP=0）
     code/, STM32F103C8T6_SPILCD/, LCD_1in83/ — NV3030B 参考代码（不编译）
-  sdkconfig.defaults          — ESP32-S3 目标，SPI master IRAM
+  sdkconfig.defaults          — ESP32-S3 目标，NIMBLE Central，16MB flash，自定义分区表
+  partitions.csv              — 自定义分区表（app 分区 2MB）
 ```
 
 #### main.c 任务结构
 
 | 任务 | 栈大小 | 优先级 | 周期 | 职责 |
 |------|--------|--------|------|------|
-| `environment_sensor_task` | 4096 | 5 | 100ms | BME280 读取温湿度气压 |
+| `environment_sensor_task` | 4096 | 5 | 100ms | BME280 读取温度气压 |
 | `heart_rate_task` | 4096 | 4 | 20ms | MAX30102 FIFO 读取 + 峰值检测 → BPM |
+| `data_fusion_task` | 4096 | 2 | 1s 队列阻塞 | 融合 BLE 脚踝数据 + 本地传感器，更新 g_latest_ankle |
+| `mqtt_upload_task` | 4096 | 1 | 2s | 读取融合数据 → JSON → MQTT 上报 OneNET |
+| `wifi_start_task` | 4096 | 3 | 一次性 | BLE 连接后延迟启动 WiFi + MQTT（避免共存冲突） |
+| NimBLE Host | — | — | 事件驱动 | BLE Central 扫描/连接/收通知 |
+
+#### BLE Central + WiFi 共存
+
+手表同时运行 BLE Central（接收脚踝通知）和 WiFi（MQTT 上报），共享 2.4GHz 射频时分复用。
+
+启动流程：
+```
+开机 → BLE 扫描 → 连接脚踝 → 使能通知 → 发 'r' 启动脚踝
+                    ↓ (2秒后)
+              暂停 BLE 通知 → WiFi 连接 → MQTT 连接 → 订阅控制 topic → 恢复 BLE 通知
+                    ↓
+              BLE + WiFi 并行（BLE 每 100ms 收通知，WiFi 每 2s 上报）
+```
+
+BLE 通知分片拼接：`g_rx_buf[128]` 缓冲区按 `\n` 切分完整消息，通过队列传给 fusion task。
+
+#### OneNET 云平台集成
+
+- **MQTT Broker**：`mqtt://mqtts.heclouds.com:1883`
+- **物模型 Topic**：`$sys/b2aLMZ812F/TEST1/thing/property/post`（上报）
+- **控制 Topic**：`$sys/b2aLMZ812F/TEST1/thing/property/set`（下发）
+- **物模型属性**：heart_rate(int32), Temp(float), barometric(float), status(enum 0-4), step_frequency(int32), control_switch(bool)
+- **status 枚举**：0=走路, 1=跑步, 2=静止, 3=准备, 4=跳
+- **远程控制**：`{"control_switch":true}` 开启上传，`{"control_switch":false}` 关闭上传
+- **调试开关**：`WIFI_ONLY_TEST=1` 跳过 BLE，只测 WiFi+MQTT
 
 #### MAX30102 心率算法
 
@@ -115,6 +145,8 @@ NV3030B 驱动已写好但因 DC 引脚未接导致白屏，已从 main.c 移除
 
 ## BLE 协议
 
+### ESP32code（脚踝端 Peripheral）
+
 手机通过 RX 特征写入单字节指令：
 - `0x72` ('r')：启动传感器 + 推理任务
 - `0x73` ('s')：停止
@@ -124,6 +156,10 @@ NV3030B 驱动已写好但因 DC 引脚未接导致白屏，已从 main.c 移除
 标签映射：jump→跳, ready→准备, run→跑, still→静止, walk→走
 
 若 MTU < 载荷大小，数据按块分片发送，片间延时 20ms。手机端需按换行符重新拼接。
+
+### Watch_code（手表端 Central）
+
+手表作为 Central 连接脚踝 Peripheral（设备名 `ESP32_Gait_Gatt`），通过 NUS TX Notify 接收步态数据。连接后自动写 'r' 到 RX 启动脚踝推理。
 
 ## 关键设计约束
 
@@ -141,6 +177,9 @@ NV3030B 驱动已写好但因 DC 引脚未接导致白屏，已从 main.c 移除
 - NV3030B 显示驱动因硬件问题（DC 引脚未接）已从构建中移除，待换 ST7789V3
 - LVGL 8.3.11 + SquareLine Studio UI 组件保留在代码中，未接入构建
 - `sdkconfig.defaults` 设置 `CONFIG_SPI_MASTER_IN_IRAM=y`（显示组件需要）
+- ESP32-S3 N16R8 16MB flash，自定义分区表 `partitions.csv`（app 2MB）
+- BLE Central + WiFi 共存：BLE 连接后延迟启动 WiFi，暂停通知→连 WiFi→恢复通知
+- OneNET 物模型 JSON 格式上报（非 `$dp` 二进制帧），QoS 0
 
 ## 配置修改指南
 
@@ -150,6 +189,8 @@ NV3030B 驱动已写好但因 DC 引脚未接导致白屏，已从 main.c 移除
 - Watch_code 传感器引脚 → I2C: `main/main.c` 中 `i2c_bus_config_t`；显示 SPI: `components/display/include/display.h`
 - Watch_code MAX30102 算法参数 → `components/max30102/src/max30102.c` 顶部宏定义
 - Watch_code LVGL 配置 → `components/lv_conf.h`
+- Watch_code WiFi/MQTT 配置 → `main/main.c` 顶部 `#define`（SSID/密码/Broker/Token）
+- Watch_code 调试开关 → `WIFI_ONLY_TEST=1` 跳过 BLE 只测 WiFi
 
 ## 设计文档归档
 
