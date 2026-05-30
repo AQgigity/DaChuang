@@ -60,6 +60,8 @@ static const ble_uuid128_t nus_rx_uuid = BLE_UUID128_INIT(
 
 typedef struct {
     char     action[16];
+    int      confidence;       // 可信度 0-100
+    char     gait_style[16];   // 发力模式
     int      cadence_spm;
     uint32_t timestamp_ms;
     bool     valid;
@@ -322,19 +324,31 @@ static void parse_and_enqueue(const char *msg)
 
     char *action_start = strstr(msg, "：");
     char *cadence_start = strstr(msg, "步频：");
+    char *gait_start = strstr(msg, "发力：");
 
-    if (action_start && cadence_start) {
+    if (action_start && cadence_start && gait_start) {
+        /* 行为标签：到 '(' 为止 */
         action_start += 3;
-        char *comma = strstr(action_start, "，");
-        if (comma && (comma - action_start) < (int)sizeof(data.action) - 1) {
-            memcpy(data.action, action_start, comma - action_start);
-            data.action[comma - action_start] = '\0';
+        char *paren = strstr(action_start, "(");
+        if (paren && (paren - action_start) < (int)sizeof(data.action) - 1) {
+            memcpy(data.action, action_start, paren - action_start);
+            data.action[paren - action_start] = '\0';
         }
 
+        /* 可信度：括号内的数字 */
+        if (paren && *(paren + 1)) {
+            data.confidence = atoi(paren + 1);
+        }
+
+        /* 步频 */
         cadence_start += 9;
         data.cadence_spm = atoi(cadence_start);
-        data.valid = true;
 
+        /* 发力模式 */
+        gait_start += 9;  // "发力：" = 9 bytes UTF-8
+        snprintf(data.gait_style, sizeof(data.gait_style), "%s", gait_start);
+
+        data.valid = true;
         xQueueSend(g_ankle_data_queue, &data, 0);
     }
 }
@@ -655,7 +669,8 @@ static int status_to_enum(const char *action)
 
 static int onenet_build_payload(char *buf, int buf_size,
                                  float temp, float press, float hr,
-                                 const char *action, int cadence)
+                                 const char *action, int cadence,
+                                 const char *gait_style)
 {
     static int msg_id = 0;
     int status_val = status_to_enum(action);
@@ -668,10 +683,12 @@ static int onenet_build_payload(char *buf, int buf_size,
         "\"Temp\":{\"value\":%.1f},"
         "\"barometric\":{\"value\":%.2f},"
         "\"status\":{\"value\":%d},"
-        "\"step_frequency\":{\"value\":%d}"
+        "\"step_frequency\":{\"value\":%d},"
+        "\"gait_style\":{\"value\":\"%s\"}"
         "}"
         "}",
-        ++msg_id, (int)hr, temp, press, status_val, cadence);
+        ++msg_id, (int)hr, temp, press, status_val, cadence,
+        gait_style);
 
     return (len > 0 && len < buf_size) ? len : -1;
 }
@@ -773,9 +790,11 @@ static void mqtt_upload_task(void *arg)
 
         const char *action = latest.valid ? latest.action : "静止";
         int cadence = latest.valid ? latest.cadence_spm : 0;
+        const char *gait_style = latest.valid ? latest.gait_style : "未发力";
 
         int len = onenet_build_payload(payload, sizeof(payload),
-                                        temp, press, hr, action, cadence);
+                                        temp, press, hr, action, cadence,
+                                        gait_style);
         if (len <= 0) {
             ESP_LOGE(TAG, "Payload build failed");
             continue;
@@ -787,8 +806,8 @@ static void mqtt_upload_task(void *arg)
         int msg_id = esp_mqtt_client_publish(g_mqtt_client, ONENET_TOPIC,
                                               payload, len, 0, 0);
         if (msg_id >= 0) {
-            ESP_LOGI(TAG, "MQTT publish OK: %s HR=%.0f T=%.1f P=%.1f C=%d",
-                     action, hr, temp, press, cadence);
+            ESP_LOGI(TAG, "MQTT publish OK: %s Gait=%s HR=%.0f T=%.1f P=%.1f C=%d",
+                     action, gait_style, hr, temp, press, cadence);
         } else {
             ESP_LOGW(TAG, "MQTT publish failed (ret=%d)", msg_id);
         }
@@ -806,10 +825,12 @@ static void data_fusion_task(void *arg)
         if (xQueueReceive(g_ankle_data_queue, &ankle, pdMS_TO_TICKS(1000)) == pdTRUE) {
             wait_cnt = 0;
             g_latest_ankle = ankle;  /* 更新共享变量供 MQTT 读取 */
-            ESP_LOGI("FUSION", "[%lu ms] Action=%s Cadence=%dspm "
-                     "HR=%.1fbpm Temp=%.1fC Press=%.1fhPa",
+            ESP_LOGI("FUSION", "[%lu ms] 行为=%s 可信度=%d%% 发力=%s "
+                     "步频=%dspm 心率=%.1fbpm 温度=%.1fC 气压=%.1fhPa",
                      (unsigned long)ankle.timestamp_ms,
                      ankle.action,
+                     ankle.confidence,
+                     ankle.gait_style,
                      ankle.cadence_spm,
                      g_current_bpm,
                      g_current_temp,

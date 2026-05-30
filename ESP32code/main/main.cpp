@@ -387,8 +387,9 @@ static void inference_task(void *arg)
 
                 char result_buf[96];
                 int len = snprintf(result_buf, sizeof(result_buf),
-                                   "行为：%s，步频：%d，发力：%s\n",
-                                   label_to_cn(best_label), (int)spm, gait_style);
+                                   "行为：%s(%d%%)，步频：%d，发力：%s\n",
+                                   label_to_cn(best_label), (int)(best_score * 100),
+                                   (int)spm, gait_style);
                 if (len > 0 && len < (int)sizeof(result_buf)) {
                     ble_uart_send_line(result_buf, len);
                 }

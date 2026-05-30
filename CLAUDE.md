@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **ESP32-S3** (`ESP32code/`) — ESP-IDF v5.4.3 + NimBLE，Nordic UART Service (NUS) 蓝牙通信。设备名：`ESP32_Gait_Gatt`。
 - **Watch_code/** — ESP-IDF v5.4.3，智能运动手表（BME280 环境传感器 + MAX30102 心率传感器），BLE Central + WiFi + MQTT 上报 OneNET 云平台。
 
-当前功能：50Hz 采集 MPU6050（IMU 6轴）+ FSR402（足压），Edge Impulse 实时推理 5 类动作（jump/ready/run/still/walk），步频（Cadence）检测，BLE 推送中文识别结果。
+当前功能：50Hz 采集 MPU6050（IMU 6轴）+ 双 FSR402（前掌+后跟足压），Edge Impulse 实时推理 5 类动作（jump/ready/run/still/walk），步频（Cadence）检测，发力模式识别（前脚掌/后脚跟/全掌），BLE 推送中文识别结果。
 
 ## 构建命令
 
@@ -44,7 +44,7 @@ ESP32code/
   main/main.cpp              — 单文件：BLE 服务、传感器采集、推理、步频检测
   components/
     mpu6050/                  — MPU6050 I2C 驱动（GPIO8/SDA, GPIO9/SCL, 400kHz）
-    fsr402/                   — FSR402 ADC 驱动（ADC_UNIT_1, CH4, GPIO5, 阈值800）
+    fsr402/                   — FSR402 ADC 驱动，双通道：Heel=CH4/GPIO5, Toe=CH0/GPIO1, 阈值800
     edge-impulse-sdk/         — EI C++ SDK + TFLite 模型（INT8 量化）
     esp_littlefs/             — LittleFS（已存在但未接入构建）
     ble_gait/, ble_spp/, storage/ — 空脚手架，未实现
@@ -138,10 +138,23 @@ NV3030B 驱动已写好但因 DC 引脚未接导致白屏，已从 main.c 移除
 
 ### 步频 (Cadence) 算法
 
-- FSR402 上升沿检测（0→1），300ms 死区防抖
+- FSR402 Heel 上升沿检测（0→1），300ms 死区防抖
 - 计算相邻落地间隔 → SPM = 60 / T
 - 长度 5 滑动平均，有效范围 40–220 SPM
 - "still"/"ready" 状态时 SPM 强制清零
+
+### 发力模式 (Gait Style) 算法
+
+- 双 FSR402 传感器：Heel（后跟, ADC_CHANNEL_4/GPIO5）+ Toe（前掌, ADC_CHANNEL_0/GPIO1）
+- 阈值判定：ADC < 800 → 踩下(1)，ADC >= 800 → 抬起(0)
+- **持续状态检测**（每 20ms 更新）：
+  - 两脚都离地 → "未发力"
+  - 仅后跟踩下 → "后脚跟发力"
+  - 仅前掌踩下 → "前脚掌发力"
+  - 双踩(11) → "全掌发力"
+- FSR402 驱动为 additive API：Heel 函数不变，Toe 用 `fsr402_toe_*` 并行函数，共享 `adc1_handle`
+- `FSR_TEST_MODE=1` 启动时打印两个传感器 ADC 原始值（调试用，测完改回 0）
+- Toe 传感器**不参与** Edge Impulse 推理，仅用于发力判定
 
 ## BLE 协议
 
@@ -151,7 +164,7 @@ NV3030B 驱动已写好但因 DC 引脚未接导致白屏，已从 main.c 移除
 - `0x72` ('r')：启动传感器 + 推理任务
 - `0x73` ('s')：停止
 
-设备通过 TX Notify 发送 UTF-8 字符串，格式：`"行为：走，步频：112\n"`
+设备通过 TX Notify 发送 UTF-8 字符串，格式：`"行为：走，步频：112，发力：后脚跟发力\n"`
 
 标签映射：jump→跳, ready→准备, run→跑, still→静止, walk→走
 
@@ -164,7 +177,7 @@ NV3030B 驱动已写好但因 DC 引脚未接导致白屏，已从 main.c 移除
 ## 关键设计约束
 
 ### ESP32code
-- 数据通路无堆分配：`ei_buf[525]` 静态缓冲区，`tx_buf[64]` 发送缓冲
+- 数据通路无堆分配：`ei_buf[525]` 静态缓冲区，`result_buf[96]` 发送缓冲
 - `ble_att_set_preferred_mtu(247)` 在 `app_main()` 显式调用
 - `vTaskDelayUntil` 保证严格 50Hz 采集周期
 - Edge Impulse SDK 编译警告通过 `target_compile_options(PUBLIC)` 传播至 main.cpp
@@ -184,7 +197,7 @@ NV3030B 驱动已写好但因 DC 引脚未接导致白屏，已从 main.c 移除
 ## 配置修改指南
 
 - BLE 设置 → 编辑 `sdkconfig.defaults`，删除 `build/` 后重建
-- 传感器引脚 → 修改对应组件 `include/*.h` 中的宏定义
+- 传感器引脚 → 修改对应组件 `include/*.h` 中的宏定义（Heel: `FSR402_ADC_CHANNEL`, Toe: `FSR402_TOE_ADC_CHANNEL`）
 - EI 模型 → 替换 `edge-impulse-sdk/` 目录并更新 `tflite-model/`
 - Watch_code 传感器引脚 → I2C: `main/main.c` 中 `i2c_bus_config_t`；显示 SPI: `components/display/include/display.h`
 - Watch_code MAX30102 算法参数 → `components/max30102/src/max30102.c` 顶部宏定义
