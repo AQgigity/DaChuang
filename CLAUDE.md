@@ -60,9 +60,9 @@ Watch_code/
     i2c_bus/                  — I2C 总线抽象（新 i2c_master API，SDA=GPIO5, SCL=GPIO4, 400kHz）
     bme280/                   — BME280/BMP280 驱动（I2C 0x76，forced mode，支持两种芯片自动检测）
     max30102/                 — MAX30102 心率驱动（I2C 0x57，Heart Rate mode，峰谷检测算法）
-    display/                  — NV3030B SPI 显示驱动（当前未编译，待换 ST7789V3）
+    display/                  — ST7789V3 SPI 显示驱动（240x280, LVGL 集成）
     UI/                       — SquareLine Studio 生成的 LVGL UI（3 个标签：HR/Temp/Press）
-    lv_conf.h                 — LVGL 配置（16bit color, LV_COLOR_16_SWAP=0）
+    lv_conf.h                 — LVGL 配置（16bit color, LV_COLOR_16_SWAP=1）
     code/, STM32F103C8T6_SPILCD/, LCD_1in83/ — NV3030B 参考代码（不编译）
   sdkconfig.defaults          — ESP32-S3 目标，NIMBLE Central，16MB flash，自定义分区表
   partitions.csv              — 自定义分区表（app 分区 2MB）
@@ -74,6 +74,8 @@ Watch_code/
 |------|--------|--------|------|------|
 | `environment_sensor_task` | 4096 | 5 | 100ms | BME280 读取温度气压 |
 | `heart_rate_task` | 4096 | 4 | 20ms | MAX30102 FIFO 读取 + 峰值检测 → BPM |
+| `lvgl_task` | 4096 | 3 | 10ms | LVGL 事件循环（lv_timer_handler） |
+| `ui_refresh_task` | 4096 | 2 | 200ms | 更新 UI 标签（HR/Temp/Press） |
 | `data_fusion_task` | 4096 | 2 | 1s 队列阻塞 | 融合 BLE 脚踝数据 + 本地传感器，更新 g_latest_ankle |
 | `mqtt_upload_task` | 4096 | 1 | 2s | 读取融合数据 → JSON → MQTT 上报 OneNET |
 | `wifi_start_task` | 4096 | 3 | 一次性 | BLE 连接后延迟启动 WiFi + MQTT（避免共存冲突） |
@@ -99,7 +101,7 @@ BLE 通知分片拼接：`g_rx_buf[128]` 缓冲区按 `\n` 切分完整消息，
 - **MQTT Broker**：`mqtt://mqtts.heclouds.com:1883`
 - **物模型 Topic**：`$sys/b2aLMZ812F/TEST1/thing/property/post`（上报）
 - **控制 Topic**：`$sys/b2aLMZ812F/TEST1/thing/property/set`（下发）
-- **物模型属性**：heart_rate(int32), Temp(float), barometric(float), status(enum 0-4), step_frequency(int32), control_switch(bool)
+- **物模型属性**：heart_rate(int32), Temp(float), barometric(float), status(enum 0-4), step_frequency(int32), gait_style(string), control_switch(bool)
 - **status 枚举**：0=走路, 1=跑步, 2=静止, 3=准备, 4=跳
 - **远程控制**：`{"control_switch":true}` 开启上传，`{"control_switch":false}` 关闭上传
 - **调试开关**：`WIFI_ONLY_TEST=1` 跳过 BLE，只测 WiFi+MQTT
@@ -120,7 +122,13 @@ BLE 通知分片拼接：`g_rx_buf[128]` 缓冲区按 `\n` 切分完整消息，
 
 #### 显示状态
 
-NV3030B 驱动已写好但因 DC 引脚未接导致白屏，已从 main.c 移除。计划换用 ST7789V3（ESP-IDF 内置 `esp_lcd_new_panel_st7789()` 支持）。display 组件和 UI 组件保留在代码中，待新屏幕到货后重新集成。
+ST7789V3 240x280 SPI 显示屏已集成，LVGL 8.3.11 + SquareLine UI 正常工作。
+
+关键配置：
+- MADCTL=0x00 强制 RGB 通道顺序（ST7789 默认 BGR）
+- `LV_COLOR_16_SWAP=1`（Kconfig 设置，非 lv_conf.h）
+- SPI 40MHz，Y 偏移 20px，颜色反转开启
+- flush callback 无额外位交换
 
 ### ESP32code main.cpp 任务结构
 
@@ -164,7 +172,9 @@ NV3030B 驱动已写好但因 DC 引脚未接导致白屏，已从 main.c 移除
 - `0x72` ('r')：启动传感器 + 推理任务
 - `0x73` ('s')：停止
 
-设备通过 TX Notify 发送 UTF-8 字符串，格式：`"行为：走，步频：112，发力：后脚跟发力\n"`
+设备通过 TX Notify 发送 UTF-8 字符串，格式：`"行为：走(95%)，步频：112，发力：后脚跟发力\n"`
+
+括号内为 Edge Impulse 分类可信度（0-100%）。
 
 标签映射：jump→跳, ready→准备, run→跑, still→静止, walk→走
 
@@ -187,9 +197,9 @@ NV3030B 驱动已写好但因 DC 引脚未接导致白屏，已从 main.c 移除
 ### Watch_code
 - 两个传感器共用 I2C_NUM_0，地址不冲突（BME280=0x76, MAX30102=0x57）
 - MAX30102 心率算法参数已调优：MIN_RANGE=400, REFRACTORY_MS=350（解决静坐 BPM 偏高问题）
-- NV3030B 显示驱动因硬件问题（DC 引脚未接）已从构建中移除，待换 ST7789V3
-- LVGL 8.3.11 + SquareLine Studio UI 组件保留在代码中，未接入构建
-- `sdkconfig.defaults` 设置 `CONFIG_SPI_MASTER_IN_IRAM=y`（显示组件需要）
+- ST7789V3 显示驱动已集成，MADCTL=0x00 强制 RGB 通道顺序
+- LVGL 8.3.11 + SquareLine Studio UI 正常工作，`LV_COLOR_16_SWAP=1` 通过 Kconfig 设置
+- `sdkconfig.defaults` 设置 `CONFIG_SPI_MASTER_IN_IRAM=y` 和 `CONFIG_LV_COLOR_16_SWAP=y`
 - ESP32-S3 N16R8 16MB flash，自定义分区表 `partitions.csv`（app 2MB）
 - BLE Central + WiFi 共存：BLE 连接后延迟启动 WiFi，暂停通知→连 WiFi→恢复通知
 - OneNET 物模型 JSON 格式上报（非 `$dp` 二进制帧），QoS 0
@@ -201,7 +211,7 @@ NV3030B 驱动已写好但因 DC 引脚未接导致白屏，已从 main.c 移除
 - EI 模型 → 替换 `edge-impulse-sdk/` 目录并更新 `tflite-model/`
 - Watch_code 传感器引脚 → I2C: `main/main.c` 中 `i2c_bus_config_t`；显示 SPI: `components/display/include/display.h`
 - Watch_code MAX30102 算法参数 → `components/max30102/src/max30102.c` 顶部宏定义
-- Watch_code LVGL 配置 → `components/lv_conf.h`
+- Watch_code LVGL 配置 → `components/lv_conf.h`（注意：`LV_COLOR_16_SWAP` 通过 Kconfig 控制，非此文件）
 - Watch_code WiFi/MQTT 配置 → `main/main.c` 顶部 `#define`（SSID/密码/Broker/Token）
 - Watch_code 调试开关 → `WIFI_ONLY_TEST=1` 跳过 BLE 只测 WiFi
 

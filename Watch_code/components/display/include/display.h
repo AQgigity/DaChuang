@@ -18,10 +18,16 @@ extern "C" {
 #define DISPLAY_HEIGHT      280
 
 /**
- * @brief Initialize SPI bus, NV3030B panel, LVGL, and backlight
+ * @brief Initialize SPI bus, ST7789V3 panel, LVGL, and backlight
  * Must be called before any LVGL or UI functions.
  */
 void display_init(void);
+
+/**
+ * @brief Draw color bar test pattern (no LVGL needed)
+ * Draws 8 vertical bars: R, G, B, W, Y, C, M, K
+ */
+void display_test_bars(void);
 
 /**
  * @brief Set backlight brightness

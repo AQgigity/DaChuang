@@ -17,6 +17,28 @@
 #include "i2c_bus.h"
 #include "bme280.h"
 #include "max30102.h"
+#include "display.h"
+#include "ui.h"
+
+/* ==================== EMG 肌电传感器（临时模块，ENABLE_EMG=0 可一键移除） ==================== */
+#define ENABLE_EMG  1
+
+#if ENABLE_EMG
+#include "esp_adc/adc_oneshot.h"
+
+#define EMG_ADC_UNIT      ADC_UNIT_1
+#define EMG_ADC_CHANNEL   ADC_CHANNEL_2   // GPIO3
+#define EMG_ADC_ATTEN     ADC_ATTEN_DB_11 // 量程 ~0-3.1V
+#define EMG_SAMPLE_MS     10              // 采样周期 10ms (100Hz)
+#define EMG_BASELINE      1750            // 基准值（静止时 ADC 均值）
+#define EMG_PEAK_THRESH   500             // 波峰阈值（偏离基准 > 500 算发力）
+#define EMG_DEADZONE_MS   200             // 死区时间 200ms（同一次发力只标记一个脉冲）
+#define EMG_WINDOW_SEC    2               // 统计窗口 2 秒
+
+static adc_oneshot_unit_handle_t s_emg_adc_handle = NULL;
+static volatile int g_current_emg_raw = 0;   // 原始 ADC 值 (0-4095)
+static volatile int g_emg_peak_count = 0;    // 窗口内波峰数（挥臂频率 peaks/s）
+#endif
 
 static const char *TAG = "WATCH";
 
@@ -845,6 +867,102 @@ static void data_fusion_task(void *arg)
     }
 }
 
+/* ==================== 显示任务 ==================== */
+
+static void lvgl_task(void *arg)
+{
+    while (1) {
+        lv_timer_handler();
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+static void ui_refresh_task(void *arg)
+{
+    char buf[32];
+    while (1) {
+        float bpm = g_current_bpm;
+        if (bpm > 0.0f) {
+            snprintf(buf, sizeof(buf), "HR:%.0fbpm", bpm);
+        } else {
+            snprintf(buf, sizeof(buf), "HR:---bpm");
+        }
+        lv_label_set_text(ui_uiLabelHR, buf);
+
+        snprintf(buf, sizeof(buf), "Temp:%.1fC", g_current_temp);
+        lv_label_set_text(ui_uiLabelTEMP, buf);
+
+        snprintf(buf, sizeof(buf), "Press:%.1fhPa", g_current_press);
+        lv_label_set_text(ui_uiLabelPRESS, buf);
+
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+}
+
+/* ==================== EMG 肌电采集 ==================== */
+
+#if ENABLE_EMG
+static void emg_init(void)
+{
+    adc_oneshot_unit_init_cfg_t init_cfg = {
+        .unit_id = EMG_ADC_UNIT,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_cfg, &s_emg_adc_handle));
+
+    adc_oneshot_chan_cfg_t chan_cfg = {
+        .atten   = EMG_ADC_ATTEN,
+        .bitwidth = ADC_BITWIDTH_12,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(s_emg_adc_handle, EMG_ADC_CHANNEL, &chan_cfg));
+
+    ESP_LOGI(TAG, "EMG initialized: ADC1_CH%d (GPIO3), 12bit, 11dB", EMG_ADC_CHANNEL);
+}
+
+static void emg_collect_task(void *arg)
+{
+    bool was_above = false;           /* 上一次是否在阈值之上 */
+    int peak_count = 0;               /* 当前窗口波峰计数 */
+    int samples_per_window = EMG_WINDOW_SEC * 1000 / EMG_SAMPLE_MS;  /* 1秒=100样本 */
+    int deadzone_cnt = 0;             /* 死区倒计时（样本数） */
+    int deadzone_samples = EMG_DEADZONE_MS / EMG_SAMPLE_MS;  /* 200ms/10ms = 20样本 */
+
+    int tick = 0;
+    while (1) {
+        int raw = 0;
+        adc_oneshot_read(s_emg_adc_handle, EMG_ADC_CHANNEL, &raw);
+        g_current_emg_raw = raw;
+
+        int offset = raw - EMG_BASELINE;
+        bool is_above = (offset > EMG_PEAK_THRESH);
+
+        /* 上升沿检测：从 below → above 且死区已过 → 算一个波峰 */
+        if (is_above && !was_above && deadzone_cnt <= 0) {
+            peak_count++;
+            deadzone_cnt = deadzone_samples;  /* 启动死区 */
+        }
+        was_above = is_above;
+        if (deadzone_cnt > 0) deadzone_cnt--;
+
+        /* VOFA+ FireWater 双通道：ch0=EMG信号, ch1=波峰标记（单脉冲） */
+        int peak_mark = (deadzone_cnt > 0) ? 1000 : 0;
+        printf("%d,%d\n", offset, peak_mark);
+
+        /* 每秒统计一次挥臂频率 */
+        tick++;
+        if (tick >= samples_per_window) {
+            tick = 0;
+            g_emg_peak_count = peak_count;
+
+            ESP_LOGI("EMG", "挥臂频率: %d peaks/s", peak_count);
+
+            peak_count = 0;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(EMG_SAMPLE_MS));
+    }
+}
+#endif
+
 /* ==================== 主函数 ==================== */
 
 void app_main(void)
@@ -866,6 +984,11 @@ void app_main(void)
     ESP_ERROR_CHECK(i2c_bus_init(&bus_cfg, &g_i2c_bus));
     ESP_ERROR_CHECK(bme280_init(g_i2c_bus, &g_bme280));
     ESP_ERROR_CHECK(max30102_init(g_i2c_bus, &g_max30102));
+
+#if ENABLE_EMG
+    /* 2b. EMG 肌电传感器 */
+    emg_init();
+#endif
 
     /* 3. 创建数据交换队列 */
     g_ankle_data_queue = xQueueCreate(4, sizeof(ankle_data_t));
@@ -896,15 +1019,26 @@ void app_main(void)
     nimble_port_freertos_init(nimble_host_task);
 #endif
 
-    /* 8. 传感器任务 */
+    /* 8. 显示 + UI */
+    display_init();
+    ui_init();
+
+    /* 9. 传感器任务 */
     xTaskCreate(environment_sensor_task, "env_sensor", 4096, &g_bme280, 5, NULL);
     xTaskCreate(heart_rate_task, "heart_rate", 4096, &g_max30102, 4, NULL);
+#if ENABLE_EMG
+    xTaskCreate(emg_collect_task, "emg_collect", 4096, NULL, 3, NULL);
+#endif
 
-    /* 9. 数据融合任务 */
+    /* 10. LVGL + UI 刷新任务 */
+    xTaskCreate(lvgl_task, "lvgl", 4096, NULL, 2, NULL);
+    xTaskCreate(ui_refresh_task, "ui_refresh", 4096, NULL, 2, NULL);
+
+    /* 11. 数据融合任务 */
     xTaskCreate(data_fusion_task, "data_fusion", FUSION_TASK_STACK, NULL,
                 FUSION_TASK_PRIO, NULL);
 
-    /* 10. MQTT 上报任务（优先级最低，等待 MQTT 连接后自动发送） */
+    /* 12. MQTT 上报任务（优先级最低，等待 MQTT 连接后自动发送） */
     xTaskCreate(mqtt_upload_task, "mqtt_upload", 4096, NULL, 1, NULL);
 
 #if WIFI_ONLY_TEST

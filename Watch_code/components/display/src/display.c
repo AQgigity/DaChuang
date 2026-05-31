@@ -1,10 +1,22 @@
+/*
+ * display.c — ST7789V3 240x280 SPI display + LVGL
+ *
+ * Color fix: ST7789 defaults to BGR channel order.
+ *   We send MADCTL=0x00 to force RGB order.
+ *   ESP32-S3 is little-endian, ST7789 expects big-endian → byte swap needed.
+ *   LV_COLOR_16_SWAP=1 handles this in LVGL.
+ *   Test values are hand byte-swapped RGB565.
+ */
+
 #include "display.h"
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_io_spi.h"
+#include "esp_lcd_panel_vendor.h"
 #include "driver/spi_master.h"
 #include "driver/ledc.h"
 #include "lvgl.h"
@@ -16,213 +28,14 @@ static const char *TAG = "DISPLAY";
 #define DRAW_BUF_LINES  40
 #define DRAW_BUF_SIZE   (DISPLAY_WIDTH * DRAW_BUF_LINES * sizeof(lv_color_t))
 
+static esp_lcd_panel_handle_t s_panel = NULL;
 static esp_lcd_panel_io_handle_t s_io = NULL;
-static lv_disp_draw_buf_t        s_draw_buf;
-static lv_disp_drv_t             s_disp_drv;
-static lv_color_t               *s_buf1;
-static lv_color_t               *s_buf2;
+static lv_disp_draw_buf_t     s_draw_buf;
+static lv_disp_drv_t          s_disp_drv;
+static lv_color_t            *s_buf1;
+static lv_color_t            *s_buf2;
 
-/* ---------- Low-level NV3030B commands ---------- */
-
-static void nv_cmd(uint8_t cmd)
-{
-    esp_lcd_panel_io_tx_param(s_io, cmd, NULL, 0);
-}
-
-static void nv_cmd_p1(uint8_t cmd, uint8_t p)
-{
-    esp_lcd_panel_io_tx_param(s_io, cmd, &p, 1);
-}
-
-static void nv_cmd_data(uint8_t cmd, const uint8_t *data, size_t len)
-{
-    esp_lcd_panel_io_tx_param(s_io, cmd, data, len);
-}
-
-static void nv_data(const void *data, size_t len)
-{
-    esp_lcd_panel_io_tx_color(s_io, -1, data, len);
-}
-
-/* ---------- Hardware reset ---------- */
-
-static void hw_reset(void)
-{
-    gpio_set_direction(DISPLAY_PIN_RST, GPIO_MODE_OUTPUT);
-    gpio_set_level(DISPLAY_PIN_RST, 1);
-    vTaskDelay(pdMS_TO_TICKS(10));
-    gpio_set_level(DISPLAY_PIN_RST, 0);
-    vTaskDelay(pdMS_TO_TICKS(10));
-    gpio_set_level(DISPLAY_PIN_RST, 1);
-    vTaskDelay(pdMS_TO_TICKS(120));
-}
-
-/* ---------- NV3030B init (merchant reference) ---------- */
-
-static void nv3030b_init(void)
-{
-    hw_reset();
-
-    /* EXTC Command Set Enable */
-    {
-        uint8_t d[] = {0x06, 0x08};
-        nv_cmd_data(0xFD, d, 2);
-    }
-
-    {
-        uint8_t d[] = {0x07, 0x04};
-        nv_cmd_data(0x61, d, 2);
-    }
-
-    {
-        uint8_t d[] = {0x00, 0x44, 0x45};
-        nv_cmd_data(0x62, d, 3);
-    }
-
-    {
-        uint8_t d[] = {0x41, 0x07, 0x12, 0x12};
-        nv_cmd_data(0x63, d, 4);
-    }
-
-    nv_cmd_p1(0x64, 0x37);
-
-    /* VSP */
-    {
-        uint8_t d[] = {0x09, 0x10, 0x21};
-        nv_cmd_data(0x65, d, 3);
-    }
-
-    /* VSN */
-    {
-        uint8_t d[] = {0x09, 0x10, 0x21};
-        nv_cmd_data(0x66, d, 3);
-    }
-
-    {
-        uint8_t d[] = {0x21, 0x40};
-        nv_cmd_data(0x67, d, 2);
-    }
-
-    /* gamma vap/van */
-    {
-        uint8_t d[] = {0x90, 0x4C, 0x50, 0x70};
-        nv_cmd_data(0x68, d, 4);
-    }
-
-    /* frame rate */
-    {
-        uint8_t d[] = {0x0F, 0x02, 0x01};
-        nv_cmd_data(0xB1, d, 3);
-    }
-
-    nv_cmd_p1(0xB4, 0x01);
-
-    /* porch */
-    {
-        uint8_t d[] = {0x02, 0x02, 0x0A, 0x14};
-        nv_cmd_data(0xB5, d, 4);
-    }
-
-    {
-        uint8_t d[] = {0x04, 0x01, 0x9F, 0x00, 0x02};
-        nv_cmd_data(0xB6, d, 5);
-    }
-
-    nv_cmd_p1(0xDF, 0x11);
-
-    /* GAMMA */
-    {
-        uint8_t d[] = {0x03, 0x00, 0x00, 0x30, 0x33, 0x3F};
-        nv_cmd_data(0xE2, d, 6);
-    }
-    {
-        uint8_t d[] = {0x3F, 0x33, 0x30, 0x00, 0x00, 0x03};
-        nv_cmd_data(0xE5, d, 6);
-    }
-    {
-        uint8_t d[] = {0x05, 0x67};
-        nv_cmd_data(0xE1, d, 2);
-    }
-    {
-        uint8_t d[] = {0x67, 0x06};
-        nv_cmd_data(0xE4, d, 2);
-    }
-    {
-        uint8_t d[] = {0x05, 0x06, 0x0A, 0x0C, 0x0B, 0x0B, 0x13, 0x19};
-        nv_cmd_data(0xE0, d, 8);
-    }
-    {
-        uint8_t d[] = {0x18, 0x13, 0x0D, 0x09, 0x0B, 0x0B, 0x05, 0x06};
-        nv_cmd_data(0xE3, d, 8);
-    }
-
-    /* source */
-    {
-        uint8_t d[] = {0x00, 0xFF};
-        nv_cmd_data(0xE6, d, 2);
-    }
-    {
-        uint8_t d[] = {0x01, 0x04, 0x03, 0x03, 0x00, 0x12};
-        nv_cmd_data(0xE7, d, 6);
-    }
-    {
-        uint8_t d[] = {0x00, 0x70, 0x00};
-        nv_cmd_data(0xE8, d, 3);
-    }
-
-    /* gate */
-    nv_cmd_p1(0xEC, 0x52);
-
-    {
-        uint8_t d[] = {0x01, 0x01, 0x02};
-        nv_cmd_data(0xF1, d, 3);
-    }
-    {
-        uint8_t d[] = {0x01, 0x30, 0x00, 0x00};
-        nv_cmd_data(0xF6, d, 4);
-    }
-
-    {
-        uint8_t d[] = {0xFA, 0xFC};
-        nv_cmd_data(0xFD, d, 2);
-    }
-
-    /* COLMOD: 16bit/pixel */
-    nv_cmd_p1(0x3A, 0x55);
-
-    /* Tearing Effect */
-    nv_cmd_p1(0x35, 0x00);
-
-    /* MADCTL: portrait, BGR */
-    nv_cmd_p1(0x36, 0x08);
-
-    /* Display Inversion ON */
-    nv_cmd(0x21);
-
-    nv_cmd(0x11); /* exit sleep */
-    vTaskDelay(pdMS_TO_TICKS(200));
-    nv_cmd(0x29); /* display on */
-    vTaskDelay(pdMS_TO_TICKS(20));
-    nv_cmd(0x2C); /* memory write */
-
-    ESP_LOGI(TAG, "NV3030B init done");
-}
-
-/* ---------- Set draw window (16-bit addr, y+20 offset) ---------- */
-
-static void set_window(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2)
-{
-    uint16_t ys = y1 + 20, ye = y2 + 20;
-    uint8_t ca[] = {(x1 >> 8) & 0xFF, x1 & 0xFF, (x2 >> 8) & 0xFF, x2 & 0xFF};
-    nv_cmd_data(0x2A, ca, 4);
-
-    uint8_t ra[] = {(ys >> 8) & 0xFF, ys & 0xFF, (ye >> 8) & 0xFF, ye & 0xFF};
-    nv_cmd_data(0x2B, ra, 4);
-
-    nv_cmd(0x2C); /* RAMWR */
-}
-
-/* ---------- Backlight ---------- */
+/* ==================== Backlight ==================== */
 
 static void backlight_init(void)
 {
@@ -255,31 +68,16 @@ void display_set_brightness(int percent)
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
 }
 
-/* ---------- LVGL flush callback (with byte swap for NV3030B) ---------- */
-
-static uint16_t s_swap_buf[DISPLAY_WIDTH * DRAW_BUF_LINES];
+/* ==================== LVGL flush ==================== */
 
 static void flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_p)
 {
-    uint16_t x1 = area->x1, y1 = area->y1;
-    uint16_t x2 = area->x2, y2 = area->y2;
-    uint32_t pixels = (uint32_t)(x2 - x1 + 1) * (y2 - y1 + 1);
-
-    /* RGB565 → BGR565: swap R and B channels */
-    for (uint32_t i = 0; i < pixels; i++) {
-        uint16_t c = color_p[i].full;
-        uint16_t r = (c >> 11) & 0x1F;
-        uint16_t b = c & 0x1F;
-        s_swap_buf[i] = (b << 11) | (c & 0x07E0) | r;
-    }
-
-    set_window(x1, y1, x2, y2);
-    nv_data(s_swap_buf, pixels * 2);
-
+    esp_lcd_panel_draw_bitmap(s_panel, area->x1, area->y1,
+                              area->x2 + 1, area->y2 + 1, color_p);
     lv_disp_flush_ready(drv);
 }
 
-/* ---------- LVGL tick ---------- */
+/* ==================== LVGL tick ==================== */
 
 static esp_timer_handle_t s_tick_timer = NULL;
 
@@ -298,13 +96,13 @@ static void lvgl_tick_init(void)
     ESP_ERROR_CHECK(esp_timer_start_periodic(s_tick_timer, 5000));
 }
 
-/* ---------- Public API ---------- */
+/* ==================== display_init ==================== */
 
 void display_init(void)
 {
-    ESP_LOGI(TAG, "Initializing NV3030B display...");
+    ESP_LOGI(TAG, "Initializing ST7789V3...");
 
-    /* 1. SPI bus */
+    /* SPI bus */
     spi_bus_config_t bus_cfg = {
         .sclk_io_num     = DISPLAY_PIN_SCLK,
         .mosi_io_num     = DISPLAY_PIN_MOSI,
@@ -315,11 +113,11 @@ void display_init(void)
     };
     ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO));
 
-    /* 2. SPI IO */
+    /* SPI panel IO */
     esp_lcd_panel_io_spi_config_t io_cfg = {
         .dc_gpio_num       = DISPLAY_PIN_DC,
         .cs_gpio_num       = DISPLAY_PIN_CS,
-        .pclk_hz           = 1 * 1000 * 1000,
+        .pclk_hz           = 40 * 1000 * 1000,
         .lcd_cmd_bits       = 8,
         .lcd_param_bits     = 8,
         .spi_mode           = 0,
@@ -328,12 +126,28 @@ void display_init(void)
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST,
                                              &io_cfg, &s_io));
 
-    /* 3. NV3030B panel init */
-    nv3030b_init();
+    /* ST7789V3 panel */
+    esp_lcd_panel_dev_config_t panel_cfg = {
+        .reset_gpio_num = DISPLAY_PIN_RST,
+        .rgb_endian     = LCD_RGB_ENDIAN_RGB,
+        .bits_per_pixel = 16,
+    };
+    ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(s_io, &panel_cfg, &s_panel));
+    ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
+    ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
 
-    ESP_LOGI(TAG, "NV3030B ready (%dx%d)", DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    /* Force RGB channel order (default is BGR) */
+    esp_lcd_panel_invert_color(s_panel, true);
+    esp_lcd_panel_set_gap(s_panel, 0, 20);
+    esp_lcd_panel_disp_on_off(s_panel, true);
 
-    /* 4. LVGL */
+    /* MADCTL=0x00: RGB order, portrait, no mirror */
+    uint8_t madctl = 0x00;
+    esp_lcd_panel_io_tx_param(s_io, 0x36, &madctl, 1);
+
+    ESP_LOGI(TAG, "ST7789V3 ready (%dx%d)", DISPLAY_WIDTH, DISPLAY_HEIGHT);
+
+    /* LVGL */
     lv_init();
 
     s_buf1 = heap_caps_malloc(DRAW_BUF_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
@@ -352,9 +166,45 @@ void display_init(void)
 
     lvgl_tick_init();
 
-    /* 5. Backlight */
     backlight_init();
     display_set_brightness(80);
 
     ESP_LOGI(TAG, "Display init complete");
+}
+
+/* ==================== Test: color bars ==================== */
+/*
+ * 8 bars: R G B W Y C M K
+ * RGB565 byte-swapped for ST7789 big-endian.
+ */
+
+void display_test_bars(void)
+{
+    static const uint16_t colors[8] = {
+        0x00F8, /* Red    (0xF800 swapped) */
+        0xE007, /* Green  (0x07E0 swapped) */
+        0x1F00, /* Blue   (0x001F swapped) */
+        0xFFFF, /* White  */
+        0xE0FF, /* Yellow (0xFFE0 swapped) */
+        0xFF07, /* Cyan   (0x07FF swapped) */
+        0x1FF8, /* Magenta(0xF81F swapped) */
+        0x0000, /* Black  */
+    };
+
+    uint16_t *line = heap_caps_malloc(DISPLAY_WIDTH * sizeof(uint16_t),
+                                      MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    assert(line);
+
+    for (int x = 0; x < DISPLAY_WIDTH; x++) {
+        int bar = x / 30;
+        if (bar > 7) bar = 7;
+        line[x] = colors[bar];
+    }
+
+    for (int y = 0; y < DISPLAY_HEIGHT; y++) {
+        esp_lcd_panel_draw_bitmap(s_panel, 0, y, DISPLAY_WIDTH, y + 1, line);
+    }
+
+    heap_caps_free(line);
+    ESP_LOGI(TAG, "Test bars drawn");
 }
