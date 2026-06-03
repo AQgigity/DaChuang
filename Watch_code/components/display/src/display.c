@@ -167,7 +167,7 @@ void display_init(void)
     lvgl_tick_init();
 
     backlight_init();
-    display_set_brightness(80);
+    display_set_brightness(100);
 
     ESP_LOGI(TAG, "Display init complete");
 }

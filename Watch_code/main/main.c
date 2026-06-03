@@ -731,7 +731,7 @@ static int status_to_enum(const char *action)
 static int onenet_build_payload(char *buf, int buf_size,
                                  float temp, float press, float hr,
                                  const char *action, int cadence,
-                                 const char *gait_style)
+                                 const char *gait_style, int arm_freq)
 {
     static int msg_id = 0;
     int status_val = status_to_enum(action);
@@ -745,11 +745,12 @@ static int onenet_build_payload(char *buf, int buf_size,
         "\"barometric\":{\"value\":%.2f},"
         "\"status\":{\"value\":%d},"
         "\"step_frequency\":{\"value\":%d},"
-        "\"gait_style\":{\"value\":\"%s\"}"
+        "\"gait_style\":{\"value\":\"%s\"},"
+        "\"arm_frequency\":{\"value\":%d}"
         "}"
         "}",
         ++msg_id, (int)hr, temp, press, status_val, cadence,
-        gait_style);
+        gait_style, arm_freq);
 
     return (len > 0 && len < buf_size) ? len : -1;
 }
@@ -853,9 +854,15 @@ static void mqtt_upload_task(void *arg)
         int cadence = latest.valid ? latest.cadence_spm : 0;
         const char *gait_style = latest.valid ? latest.gait_style : "未发力";
 
+#if ENABLE_EMG
+        int arm_freq = (g_emg_peak_count + 1) / 2;
+#else
+        int arm_freq = 0;
+#endif
+
         int len = onenet_build_payload(payload, sizeof(payload),
                                         temp, press, hr, action, cadence,
-                                        gait_style);
+                                        gait_style, arm_freq);
         if (len <= 0) {
             ESP_LOGE(TAG, "Payload build failed");
             continue;
