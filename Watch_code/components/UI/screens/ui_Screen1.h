@@ -14,13 +14,44 @@ extern "C" {
 extern void ui_Screen1_screen_init(void);
 extern void ui_Screen1_screen_destroy(void);
 extern lv_obj_t * ui_Screen1;
+extern lv_obj_t * ui_Panel1;
+extern lv_obj_t * ui_Label6;
+extern lv_obj_t * ui_Label1;
+extern lv_obj_t * ui_LabeHR;
+extern lv_obj_t * ui_Label3;
+extern lv_obj_t * ui_Label4;
+extern lv_obj_t * ui_Label5;
+extern lv_obj_t * ui_Label7;
+extern lv_obj_t * ui_Label8;
+extern lv_obj_t * ui_Labelbarometer;
+extern lv_obj_t * ui_Label10;
+extern lv_obj_t * ui_Label11;
+extern lv_obj_t * ui_LabelTemp;
+extern lv_obj_t * ui_Panel2;
+extern lv_obj_t * ui_Label13;
+extern lv_obj_t * ui_Label16;
+extern lv_obj_t * ui_Label14;
+extern lv_obj_t * ui_Labelstate;
+extern lv_obj_t * ui_Labelconfidence;
 extern lv_obj_t * ui_Panel3;
-extern lv_obj_t * ui_uiLabelHR;
-extern lv_obj_t * ui_uiLabelTEMP;
-extern lv_obj_t * ui_uiLabelPRESS;
+extern lv_obj_t * ui_Label19;
+extern lv_obj_t * ui_Label20;
+extern lv_obj_t * ui_Label22;
+extern lv_obj_t * ui_Label23;
+extern lv_obj_t * ui_Labelcadence;
+extern lv_obj_t * ui_Labelpower;
+extern lv_obj_t * ui_Label26;
+extern lv_obj_t * ui_Label27;
+extern lv_obj_t * ui_Panel4;
+extern lv_obj_t * ui_Labelarmfrep;
+extern lv_obj_t * ui_Label28;
+extern lv_obj_t * ui_Label21;
+extern lv_obj_t * ui_Label24;
+extern lv_obj_t * ui_Label30;
+extern lv_obj_t * ui_Label32;
+extern lv_obj_t * ui_Label33;
+extern lv_obj_t * ui_Label34;
 // CUSTOM VARIABLES
-extern lv_obj_t * uic_Panel3;
-extern lv_obj_t * uic_uiLabelPRESS;
 
 #ifdef __cplusplus
 } /*extern "C"*/

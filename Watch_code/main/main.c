@@ -30,6 +30,7 @@
 #define EMG_ADC_CHANNEL   ADC_CHANNEL_2   // GPIO3
 #define EMG_ADC_ATTEN     ADC_ATTEN_DB_11 // 量程 ~0-3.1V
 #define EMG_SAMPLE_MS     10              // 采样周期 10ms (100Hz)
+#define EMG_VOFA_OUTPUT   0               // 1=VOFA+ 输出, 0=关闭
 #define EMG_BASELINE      1750            // 基准值（静止时 ADC 均值）
 #define EMG_PEAK_THRESH   500             // 波峰阈值（偏离基准 > 500 算发力）
 #define EMG_DEADZONE_MS   200             // 死区时间 200ms（同一次发力只标记一个脉冲）
@@ -341,6 +342,8 @@ static int ble_central_on_svc_disc(uint16_t conn_handle,
 
 static void parse_and_enqueue(const char *msg)
 {
+    ESP_LOGI("PARSE", "Received: %s", msg);
+
     ankle_data_t data = {0};
     data.timestamp_ms = (uint32_t)(esp_timer_get_time() / 1000);
 
@@ -371,7 +374,12 @@ static void parse_and_enqueue(const char *msg)
         snprintf(data.gait_style, sizeof(data.gait_style), "%s", gait_start);
 
         data.valid = true;
+        ESP_LOGI("PARSE", "Parsed: action=%s confidence=%d%% cadence=%d gait=%s",
+                 data.action, data.confidence, data.cadence_spm, data.gait_style);
         xQueueSend(g_ankle_data_queue, &data, 0);
+    } else {
+        ESP_LOGW("PARSE", "Failed to parse message: action=%p cadence=%p gait=%p",
+                 action_start, cadence_start, gait_start);
     }
 }
 
@@ -881,19 +889,56 @@ static void ui_refresh_task(void *arg)
 {
     char buf[32];
     while (1) {
+        /* ---- 心率 ---- */
         float bpm = g_current_bpm;
         if (bpm > 0.0f) {
-            snprintf(buf, sizeof(buf), "HR:%.0fbpm", bpm);
+            snprintf(buf, sizeof(buf), "%.0f", bpm);
         } else {
-            snprintf(buf, sizeof(buf), "HR:---bpm");
+            snprintf(buf, sizeof(buf), "---");
         }
-        lv_label_set_text(ui_uiLabelHR, buf);
+        lv_label_set_text(ui_LabeHR, buf);
 
-        snprintf(buf, sizeof(buf), "Temp:%.1fC", g_current_temp);
-        lv_label_set_text(ui_uiLabelTEMP, buf);
+        /* ---- 气压 ---- */
+        snprintf(buf, sizeof(buf), "%.1f", g_current_press);
+        lv_label_set_text(ui_Labelbarometer, buf);
 
-        snprintf(buf, sizeof(buf), "Press:%.1fhPa", g_current_press);
-        lv_label_set_text(ui_uiLabelPRESS, buf);
+        /* ---- 温度 ---- */
+        snprintf(buf, sizeof(buf), "%.1f", g_current_temp);
+        lv_label_set_text(ui_LabelTemp, buf);
+
+        /* ---- 脚踝数据 ---- */
+        ankle_data_t ankle = g_latest_ankle;
+        if (ankle.valid) {
+            /* 运动状态 */
+            lv_label_set_text(ui_Labelstate, ankle.action);
+
+            /* 可信度 */
+            snprintf(buf, sizeof(buf), "%d%%", ankle.confidence);
+            lv_label_set_text(ui_Labelconfidence, buf);
+
+            /* 步频 */
+            snprintf(buf, sizeof(buf), "%d", ankle.cadence_spm);
+            lv_label_set_text(ui_Labelcadence, buf);
+
+            /* 发力方式 */
+            lv_label_set_text(ui_Labelpower, ankle.gait_style);
+        } else {
+            /* 无脚踝数据时显示连接状态 */
+            if (g_ankle_connected) {
+                lv_label_set_text(ui_Labelstate, "已连接");
+            } else {
+                lv_label_set_text(ui_Labelstate, "未连接");
+            }
+            lv_label_set_text(ui_Labelconfidence, "---");
+            lv_label_set_text(ui_Labelcadence, "---");
+            lv_label_set_text(ui_Labelpower, "---");
+        }
+
+        /* ---- 挥臂频率（EMG 模块） ---- */
+#if ENABLE_EMG
+        snprintf(buf, sizeof(buf), "%d", g_emg_peak_count);
+        lv_label_set_text(ui_Labelarmfrep, buf);
+#endif
 
         vTaskDelay(pdMS_TO_TICKS(200));
     }
@@ -945,7 +990,9 @@ static void emg_collect_task(void *arg)
 
         /* VOFA+ FireWater 双通道：ch0=EMG信号, ch1=波峰标记（单脉冲） */
         int peak_mark = (deadzone_cnt > 0) ? 1000 : 0;
+#if EMG_VOFA_OUTPUT
         printf("%d,%d\n", offset, peak_mark);
+#endif
 
         /* 每秒统计一次挥臂频率 */
         tick++;

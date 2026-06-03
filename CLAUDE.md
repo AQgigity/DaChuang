@@ -206,6 +206,8 @@ ST7789V3 240x280 SPI 显示屏已集成，LVGL 8.3.11 + SquareLine UI 正常工�
 
 ## 配置修改指南
 
+**重要：涉及 menuconfig/Kconfig 配置时，优先提醒用户手动操作（`idf.py menuconfig`），不要直接修改文件。** 源码文件（`.c`/`.h`/`lv_conf.h`/`CMakeLists.txt`）可以直接改。
+
 - BLE 设置 → 编辑 `sdkconfig.defaults`，删除 `build/` 后重建
 - 传感器引脚 → 修改对应组件 `include/*.h` 中的宏定义（Heel: `FSR402_ADC_CHANNEL`, Toe: `FSR402_TOE_ADC_CHANNEL`）
 - EI 模型 → 替换 `edge-impulse-sdk/` 目录并更新 `tflite-model/`
