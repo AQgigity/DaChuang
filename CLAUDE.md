@@ -78,6 +78,7 @@ Watch_code/
 | `ui_refresh_task` | 4096 | 2 | 200ms | 更新 UI 标签（HR/Temp/Press） |
 | `data_fusion_task` | 4096 | 2 | 1s 队列阻塞 | 融合 BLE 脚踝数据 + 本地传感器，更新 g_latest_ankle |
 | `mqtt_upload_task` | 4096 | 1 | 2s | 读取融合数据 → JSON → MQTT 上报 OneNET |
+| `ble_scan_retry_task` | 2048 | 1 | 10s | BLE 未连接时定期重新扫描 |
 | `wifi_start_task` | 4096 | 3 | 一次性 | BLE 连接后延迟启动 WiFi + MQTT（避免共存冲突） |
 | NimBLE Host | — | — | 事件驱动 | BLE Central 扫描/连接/收通知 |
 
@@ -162,6 +163,7 @@ ST7789V3 240x280 SPI 显示屏已集成，LVGL 8.3.11 + SquareLine UI 正常工�
   - 双踩(11) → "全掌发力"
 - FSR402 驱动为 additive API：Heel 函数不变，Toe 用 `fsr402_toe_*` 并行函数，共享 `adc1_handle`
 - `FSR_TEST_MODE=1` 启动时打印两个传感器 ADC 原始值（调试用，测完改回 0）
+- `EMG_VOFA_OUTPUT=1` 启用 VOFA+ 肌电波形输出（调试用，测完改回 0）
 - Toe 传感器**不参与** Edge Impulse 推理，仅用于发力判定
 
 ## BLE 协议
@@ -216,6 +218,9 @@ ST7789V3 240x280 SPI 显示屏已集成，LVGL 8.3.11 + SquareLine UI 正常工�
 - Watch_code LVGL 配置 → `components/lv_conf.h`（注意：`LV_COLOR_16_SWAP` 通过 Kconfig 控制，非此文件）
 - Watch_code WiFi/MQTT 配置 → `main/main.c` 顶部 `#define`（SSID/密码/Broker/Token）
 - Watch_code 调试开关 → `WIFI_ONLY_TEST=1` 跳过 BLE 只测 WiFi
+- **SquareLine Studio 导出后必做**：每次从 SquareLine 重新导出 UI 文件后，需手动修改两处：
+  1. `components/UI/ui.c` — 注释掉 `LV_COLOR_16_SWAP !=0` 的 `#error`（ST7789V3 需要 `=1`）
+  2. `components/UI/CMakeLists.txt` — `add_library` 改为 `idf_component_register` 并添加 `REQUIRES lvgl`
 
 ## 设计文档归档
 

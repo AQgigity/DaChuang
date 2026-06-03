@@ -260,7 +260,7 @@ void ui_Screen1_screen_init(void)
     ui_Label19 = lv_label_create(ui_Screen1);
     lv_obj_set_width(ui_Label19, LV_SIZE_CONTENT);   /// 1
     lv_obj_set_height(ui_Label19, LV_SIZE_CONTENT);    /// 1
-    lv_obj_set_x(ui_Label19, 59);
+    lv_obj_set_x(ui_Label19, 86);
     lv_obj_set_y(ui_Label19, 43);
     lv_obj_set_align(ui_Label19, LV_ALIGN_CENTER);
     lv_label_set_text(ui_Label19, "发力");
@@ -369,7 +369,7 @@ void ui_Screen1_screen_init(void)
     lv_obj_set_x(ui_Label21, -66);
     lv_obj_set_y(ui_Label21, 112);
     lv_obj_set_align(ui_Label21, LV_ALIGN_CENTER);
-    lv_label_set_text(ui_Label21, "次/分");
+    lv_label_set_text(ui_Label21, "次/秒");
     lv_obj_set_style_text_color(ui_Label21, lv_color_hex(0xF88383), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_Label21, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_Label21, &ui_font_alimamlishu, LV_PART_MAIN | LV_STATE_DEFAULT);

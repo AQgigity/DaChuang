@@ -115,6 +115,9 @@ static volatile bool g_ankle_connected = false;
 /* 数据交换队列 */
 static QueueHandle_t g_ankle_data_queue = NULL;
 
+/* LVGL 互斥锁（多任务访问 LVGL 需要加锁） */
+static SemaphoreHandle_t g_lvgl_mutex = NULL;
+
 /* 本地传感器共享数据（volatile 单写多读） */
 static volatile float g_current_bpm = 0.0f;
 static volatile float g_current_temp = 0.0f;
@@ -369,9 +372,17 @@ static void parse_and_enqueue(const char *msg)
         cadence_start += 9;
         data.cadence_spm = atoi(cadence_start);
 
-        /* 发力模式 */
+        /* 发力模式（去掉末尾"发力"两字） */
         gait_start += 9;  // "发力：" = 9 bytes UTF-8
-        snprintf(data.gait_style, sizeof(data.gait_style), "%s", gait_start);
+        char *fali = strstr(gait_start, "发力");
+        if (fali) {
+            int len = fali - gait_start;
+            if (len >= (int)sizeof(data.gait_style)) len = sizeof(data.gait_style) - 1;
+            memcpy(data.gait_style, gait_start, len);
+            data.gait_style[len] = '\0';
+        } else {
+            snprintf(data.gait_style, sizeof(data.gait_style), "%s", gait_start);
+        }
 
         data.valid = true;
         ESP_LOGI("PARSE", "Parsed: action=%s confidence=%d%% cadence=%d gait=%s",
@@ -520,6 +531,26 @@ static void nimble_host_task(void *param)
     ESP_LOGI(TAG, "NimBLE host task started");
     nimble_port_run();
     nimble_port_deinit();
+}
+
+/* BLE 扫描重试任务：如果未连接，定期重新启动扫描 */
+static void ble_scan_retry_task(void *arg)
+{
+    int retry_count = 0;
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(10000));  /* 每 10 秒检查一次 */
+
+        if (!g_ankle_connected &&
+            g_ankle_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+            retry_count++;
+            if (retry_count % 3 == 1) {  /* 每 30 秒打印一次日志 */
+                ESP_LOGI(TAG, "BLE not connected, restarting scan... (retry #%d)", retry_count);
+            }
+            ble_start_scan();
+        } else {
+            retry_count = 0;  /* 连接成功后重置计数 */
+        }
+    }
 }
 
 /* ==================== WiFi ==================== */
@@ -880,7 +911,10 @@ static void data_fusion_task(void *arg)
 static void lvgl_task(void *arg)
 {
     while (1) {
-        lv_timer_handler();
+        if (g_lvgl_mutex && xSemaphoreTake(g_lvgl_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            lv_timer_handler();
+            xSemaphoreGive(g_lvgl_mutex);
+        }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
@@ -889,6 +923,12 @@ static void ui_refresh_task(void *arg)
 {
     char buf[32];
     while (1) {
+        /* 等待 LVGL 互斥锁 */
+        if (g_lvgl_mutex == NULL || xSemaphoreTake(g_lvgl_mutex, pdMS_TO_TICKS(500)) != pdTRUE) {
+            vTaskDelay(pdMS_TO_TICKS(200));
+            continue;
+        }
+
         /* ---- 心率 ---- */
         float bpm = g_current_bpm;
         if (bpm > 0.0f) {
@@ -908,6 +948,12 @@ static void ui_refresh_task(void *arg)
 
         /* ---- 脚踝数据 ---- */
         ankle_data_t ankle = g_latest_ankle;
+        static int dbg_cnt = 0;
+        if (++dbg_cnt >= 10) {  /* 每 2 秒打印一次 */
+            dbg_cnt = 0;
+            ESP_LOGI("UI", "ankle.valid=%d action=%s connected=%d",
+                     ankle.valid, ankle.action, g_ankle_connected);
+        }
         if (ankle.valid) {
             /* 运动状态 */
             lv_label_set_text(ui_Labelstate, ankle.action);
@@ -934,11 +980,29 @@ static void ui_refresh_task(void *arg)
             lv_label_set_text(ui_Labelpower, "---");
         }
 
-        /* ---- 挥臂频率（EMG 模块） ---- */
+        /* ---- 挥臂频率（EMG 2秒窗口÷2→每秒频率，5秒无变化自动清零） ---- */
 #if ENABLE_EMG
-        snprintf(buf, sizeof(buf), "%d", g_emg_peak_count);
-        lv_label_set_text(ui_Labelarmfrep, buf);
+        {
+            static int last_arm_freq = -1;
+            static int arm_freq_stale_cnt = 0;
+            int arm_freq = (g_emg_peak_count + 1) / 2;  /* 四舍五入 */
+            if (arm_freq == last_arm_freq) {
+                arm_freq_stale_cnt++;
+                if (arm_freq_stale_cnt >= 25) {  /* 25×200ms = 5秒 */
+                    arm_freq = 0;
+                    arm_freq_stale_cnt = 0;
+                }
+            } else {
+                arm_freq_stale_cnt = 0;
+            }
+            last_arm_freq = arm_freq;
+            snprintf(buf, sizeof(buf), "%d", arm_freq);
+            lv_label_set_text(ui_Labelarmfrep, buf);
+        }
 #endif
+
+        /* 释放互斥锁 */
+        xSemaphoreGive(g_lvgl_mutex);
 
         vTaskDelay(pdMS_TO_TICKS(200));
     }
@@ -1037,9 +1101,10 @@ void app_main(void)
     emg_init();
 #endif
 
-    /* 3. 创建数据交换队列 */
+    /* 3. 创建数据交换队列和互斥锁 */
     g_ankle_data_queue = xQueueCreate(4, sizeof(ankle_data_t));
     g_cccd_sem = xSemaphoreCreateBinary();
+    g_lvgl_mutex = xSemaphoreCreateMutex();
 
 #if !WIFI_ONLY_TEST
     /* 4. 初始化 NimBLE */
@@ -1087,6 +1152,9 @@ void app_main(void)
 
     /* 12. MQTT 上报任务（优先级最低，等待 MQTT 连接后自动发送） */
     xTaskCreate(mqtt_upload_task, "mqtt_upload", 4096, NULL, 1, NULL);
+
+    /* 13. BLE 扫描重试任务（未连接时定期重新扫描） */
+    xTaskCreate(ble_scan_retry_task, "ble_retry", 2048, NULL, 1, NULL);
 
 #if WIFI_ONLY_TEST
     /* WiFi 测试模式：直接启动 WiFi + MQTT */
