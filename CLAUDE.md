@@ -55,7 +55,15 @@ ESP32code/
 
 ```
 Watch_code/
-  main/main.c                — 单文件：BLE Central + 传感器 + WiFi + MQTT + 云平台控制
+  main/
+    main.c                   — 初始化 + 任务创建（~120行）
+    watch_common.h           — 共享数据结构、全局变量 extern
+    ble_central.c/h          — BLE Central 扫描/连接/NUS/通知/解析
+    wifi_mqtt.c/h            — WiFi + MQTT + OneNET 云平台上报
+    sensor_task.c/h          — BME280 + MAX30102 传感器任务
+    display_task.c/h         — LVGL + UI 刷新任务
+    emg_sensor.c/h           — EMG 肌电 ADC 采集 + 波峰检测
+    data_fusion.c/h          — 脚踝数据融合任务
   components/
     i2c_bus/                  — I2C 总线抽象（新 i2c_master API，SDA=GPIO5, SCL=GPIO4, 400kHz）
     bme280/                   — BME280/BMP280 驱动（I2C 0x76，forced mode，支持两种芯片自动检测）
@@ -68,19 +76,20 @@ Watch_code/
   partitions.csv              — 自定义分区表（app 分区 2MB）
 ```
 
-#### main.c 任务结构
+#### 任务结构（各任务定义在对应模块 .c 文件中）
 
-| 任务 | 栈大小 | 优先级 | 周期 | 职责 |
-|------|--------|--------|------|------|
-| `environment_sensor_task` | 4096 | 5 | 100ms | BME280 读取温度气压 |
-| `heart_rate_task` | 4096 | 4 | 20ms | MAX30102 FIFO 读取 + 峰值检测 → BPM |
-| `lvgl_task` | 4096 | 3 | 10ms | LVGL 事件循环（lv_timer_handler） |
-| `ui_refresh_task` | 4096 | 2 | 200ms | 更新 UI 标签（HR/Temp/Press） |
-| `data_fusion_task` | 4096 | 2 | 1s 队列阻塞 | 融合 BLE 脚踝数据 + 本地传感器，更新 g_latest_ankle |
-| `mqtt_upload_task` | 4096 | 1 | 2s | 读取融合数据 → JSON → MQTT 上报 OneNET |
-| `ble_scan_retry_task` | 2048 | 1 | 10s | BLE 未连接时定期重新扫描 |
-| `wifi_start_task` | 4096 | 3 | 一次性 | BLE 连接后延迟启动 WiFi + MQTT（避免共存冲突） |
-| NimBLE Host | — | — | 事件驱动 | BLE Central 扫描/连接/收通知 |
+| 任务 | 栈大小 | 优先级 | 周期 | 模块 | 职责 |
+|------|--------|--------|------|------|------|
+| `environment_sensor_task` | 4096 | 5 | 100ms | sensor_task.c | BME280 读取温度气压 |
+| `heart_rate_task` | 4096 | 4 | 20ms | sensor_task.c | MAX30102 FIFO 读取 + 峰值检测 → BPM |
+| `emg_collect_task` | 4096 | 3 | 10ms | emg_sensor.c | EMG ADC 采集 + 波峰检测 |
+| `wifi_start_task` | 4096 | 3 | 一次性 | wifi_mqtt.c | BLE 连接后延迟启动 WiFi + MQTT |
+| `lvgl_task` | 4096 | 2 | 10ms | display_task.c | LVGL 事件循环（lv_timer_handler） |
+| `ui_refresh_task` | 4096 | 2 | 200ms | display_task.c | 更新 UI 标签（HR/Temp/Press/脚踝/挥臂） |
+| `data_fusion_task` | 4096 | 2 | 1s 队列阻塞 | data_fusion.c | 融合 BLE 脚踝数据 + 本地传感器 |
+| `mqtt_upload_task` | 4096 | 1 | 2s | wifi_mqtt.c | 读取融合数据 → JSON → MQTT 上报 OneNET |
+| `ble_scan_retry_task` | 2048 | 1 | 10s | ble_central.c | BLE 未连接时定期重新扫描 |
+| NimBLE Host | — | — | 事件驱动 | ble_central.c | BLE Central 扫描/连接/收通知 |
 
 #### BLE Central + WiFi 共存
 
