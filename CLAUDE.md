@@ -61,7 +61,7 @@ Watch_code/
     bme280/                   — BME280/BMP280 驱动（I2C 0x76，forced mode，支持两种芯片自动检测）
     max30102/                 — MAX30102 心率驱动（I2C 0x57，Heart Rate mode，峰谷检测算法）
     display/                  — ST7789V3 SPI 显示驱动（240x280, LVGL 集成）
-    UI/                       — SquareLine Studio 生成的 LVGL UI（3 个标签：HR/Temp/Press）
+    UI/                       — SquareLine Studio 生成的 LVGL UI（8 个数据标签：HR/气压/温度/状态/可信度/步频/发力/挥臂）
     lv_conf.h                 — LVGL 配置（16bit color, LV_COLOR_16_SWAP=1）
     code/, STM32F103C8T6_SPILCD/, LCD_1in83/ — NV3030B 参考代码（不编译）
   sdkconfig.defaults          — ESP32-S3 目标，NIMBLE Central，16MB flash，自定义分区表
@@ -102,7 +102,7 @@ BLE 通知分片拼接：`g_rx_buf[128]` 缓冲区按 `\n` 切分完整消息，
 - **MQTT Broker**：`mqtt://mqtts.heclouds.com:1883`
 - **物模型 Topic**：`$sys/b2aLMZ812F/TEST1/thing/property/post`（上报）
 - **控制 Topic**：`$sys/b2aLMZ812F/TEST1/thing/property/set`（下发）
-- **物模型属性**：heart_rate(int32), Temp(float), barometric(float), status(enum 0-4), step_frequency(int32), gait_style(string), control_switch(bool)
+- **物模型属性**：heart_rate(int32), Temp(float), barometric(float), status(enum 0-4), step_frequency(int32), gait_style(string), arm_frequency(int32), control_switch(bool)
 - **status 枚举**：0=走路, 1=跑步, 2=静止, 3=准备, 4=跳
 - **远程控制**：`{"control_switch":true}` 开启上传，`{"control_switch":false}` 关闭上传
 - **调试开关**：`WIFI_ONLY_TEST=1` 跳过 BLE，只测 WiFi+MQTT
@@ -133,10 +133,23 @@ ST7789V3 240x280 SPI 显示屏已集成，LVGL 8.3.11 + SquareLine UI 正常工�
 
 ### ESP32code main.cpp 任务结构
 
-| 任务 | 栈大小 | 周期 | 职责 |
-|------|--------|------|------|
-| `sensor_data_task` | 8192 | 20ms (50Hz) | 读传感器 → 滑动窗口 → 步频上升沿检测 → 每5样本通知推理 |
-| `inference_task` | 20480 | 按信号量 | run_classifier → 中文标签 + SPM → BLE Notify |
+| 任务 | 栈大小 | 优先级 | 周期/触发 | 职责 |
+|------|--------|--------|-----------|------|
+| `sensor_data_task` | 8192 | 5 | 20ms (50Hz) | 读 MPU6050 + 双 FSR402 → 滑动窗口(75样本) → 步频检测 → 发力判定 → 每5样本触发推理 |
+| `inference_task` | 20480 | 4 | 每100ms (信号量) | run_classifier → 中文标签 + SPM → BLE Notify 发送结果 |
+| NimBLE Host | — | — | 事件驱动 | BLE Peripheral 广播/连接/收指令/发通知 |
+
+**数据流**：
+```
+FSR402(Heel) ─┐
+FSR402(Toe)  ─┤→ sensor_data_task (50Hz) → ei_buf[525] 滑动窗口
+MPU6050(6轴) ─┘         ↓ 每5样本 (100ms)
+                   xSemaphoreGive(ei_sem)
+                            ↓
+                   inference_task → run_classifier → BLE Notify
+```
+
+**BLE 发送频率**：~10Hz（每 100ms 一次推理，推理完成后立即发送）
 
 ### Edge Impulse 模型参数
 
@@ -227,3 +240,17 @@ ST7789V3 240x280 SPI 显示屏已集成，LVGL 8.3.11 + SquareLine UI 正常工�
 所有设计方案、计划表、技术决策完成后必须归档到 `memory/` 目录，不能只存在 `.claude/plans/`（会被覆盖）。
 
 归档格式：`memory/plan_archive_<任务名>.md`，使用 `metadata.type: project`，在 `memory/MEMORY.md` 中添加索引条目。
+
+## 问题排查归档
+
+**每次解决一个问题后，必须将问题和解决方法追加到 `memory/troubleshooting_log.md`。** 格式：
+
+```
+### 问题 N：简短标题
+**现象**：描述报错或异常表现
+**原因**：分析根本原因
+**解决方法**：具体操作步骤
+**预防**：如何避免再次发生（可选）
+```
+
+按类别分组：SquareLine Studio / NimBLE / LVGL / EMG / 配置 / MQTT 等。

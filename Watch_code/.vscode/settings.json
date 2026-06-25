@@ -15,5 +15,5 @@
     "--compile-commands-dir=c:\\Users\\86157\\Desktop\\H743\\DaChuang\\Watch_code\\build"
   ],
   "idf.flashType": "UART",
-  "idf.portWin": "COM3"
+  "idf.portWin": "COM16"
 }
