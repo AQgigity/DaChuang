@@ -14,7 +14,7 @@
     "--compile-commands-dir=c:\\Users\\86157\\Desktop\\H743\\DaChuang\\ESP32code\\ESP32_project\\build"
   ],
   "idf.flashType": "UART",
-  "idf.portWin": "COM3",
+  "idf.portWin": "COM8",
   "idf.beforeFlash": "no_reset",
   "idf.afterFlash": "hard_reset"
 }

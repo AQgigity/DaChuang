@@ -41,7 +41,12 @@ idf.py build
 
 ```
 ESP32code/
-  main/main.cpp              — 单文件：BLE 服务、传感器采集、推理、步频检测
+  main/
+    main.cpp                 — 初始化 + FSR 测试（~90行）
+    gait_common.h            — 共享数据结构、全局变量 extern、EI 模型宏
+    ble_peripheral.c/h       — BLE Peripheral NUS/GATT/GAP/广播/分片
+    gait_inference.cpp/h     — Edge Impulse 推理（C++）
+    gait_sensor.c/h          — 50Hz采集+步频+发力检测+滑动窗口
   components/
     mpu6050/                  — MPU6050 I2C 驱动（GPIO8/SDA, GPIO9/SCL, 400kHz）
     fsr402/                   — FSR402 ADC 驱动，双通道：Heel=CH4/GPIO5, Toe=CH0/GPIO1, 阈值800
@@ -140,13 +145,13 @@ ST7789V3 240x280 SPI 显示屏已集成，LVGL 8.3.11 + SquareLine UI 正常工�
 - SPI 40MHz，Y 偏移 20px，颜色反转开启
 - flush callback 无额外位交换
 
-### ESP32code main.cpp 任务结构
+### ESP32code 任务结构（各任务定义在对应模块 .c/.cpp 文件中）
 
-| 任务 | 栈大小 | 优先级 | 周期/触发 | 职责 |
-|------|--------|--------|-----------|------|
-| `sensor_data_task` | 8192 | 5 | 20ms (50Hz) | 读 MPU6050 + 双 FSR402 → 滑动窗口(75样本) → 步频检测 → 发力判定 → 每5样本触发推理 |
-| `inference_task` | 20480 | 4 | 每100ms (信号量) | run_classifier → 中文标签 + SPM → BLE Notify 发送结果 |
-| NimBLE Host | — | — | 事件驱动 | BLE Peripheral 广播/连接/收指令/发通知 |
+| 任务 | 栈大小 | 优先级 | 周期/触发 | 模块 | 职责 |
+|------|--------|--------|-----------|------|------|
+| `sensor_data_task` | 8192 | 5 | 20ms (50Hz) | gait_sensor.c | 读 MPU6050 + 双 FSR402 → 滑动窗口 → 步频检测 → 发力判定 → 每5样本触发推理 |
+| `inference_task` | 20480 | 4 | 每100ms (信号量) | gait_inference.cpp | run_classifier → 中文标签 + SPM → BLE Notify 发送结果 |
+| NimBLE Host | — | — | 事件驱动 | ble_peripheral.c | BLE Peripheral 广播/连接/收指令/发通知 |
 
 **数据流**：
 ```
