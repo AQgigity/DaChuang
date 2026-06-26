@@ -45,7 +45,18 @@
 
 ## 🖼 系统展示看板 (Project Gallery)
 
-> 💡 **开发者提示**：请在完成硬件打样、平台搭建后，将对应的图片上传到您的 GitHub 仓库中，并替换下方括号中的 `此处替换为图片链接` 文本。
+> 💡 **开发者提示**：可放大观看，具体图片可在文件夹中找到。
+### 1. 硬件电路设计（原理图与 PCB 成果）
+* **脚踝传感终端硬件设计**
+  | 核心原理图 (Schematic) | PCB 3D 渲染图 (Layout) |
+  | :---: | :---: |
+  |<img width="410.2" height="292.2" alt="脚踝原理图" src="https://github.com/user-attachments/assets/20795733-215b-41d0-8e1d-3224746b109a" />|<img width="450.3" height="300.6" alt="image" src="https://github.com/user-attachments/assets/992e1782-d92e-42c6-b364-f61d1033d490" />|
+  | *包含 ESP32-S3 最小系统、MPU6050 接口与 FSR 调理电路* | *紧凑型穿戴式双层板布局，优化信号回流路径* |
+* **手表处理终端硬件设计**
+  | 核心原理图 (Schematic) | PCB 3D 渲染图 (Layout) |
+  | :---: | :---: |
+  |<img width="410.2" height="292.2" alt="手表原理图" src="https://github.com/user-attachments/assets/c3373ca1-e050-43aa-8bee-4b7e30a96333" />|<img width="450" height="300" alt="image" src="https://github.com/user-attachments/assets/43d4d77b-fece-465a-b4f6-cdf4399e1d9f" />|
+  | *包含 LCD 驱动总线、MAX30102 采集前端与电源管理* | *圆形/方形穿戴表盘多层板设计，数字/模拟地单点隔离* |
 
 ### 1. 硬件端实物与结构设计
 | 脚踝传感终端实物 | 手表处理终端实物 | 系统整体硬件框图 |
@@ -53,11 +64,21 @@
 | <img width="240" height="320" alt="IMG_20260617_025606_edit_87442" src="https://github.com/user-attachments/assets/d5549600-c86e-455e-bf42-dee82c5ba487" />|<img width="240" height="320" alt="IMG_20260617_030354" src="https://github.com/user-attachments/assets/b311ae89-6a77-4f1d-809a-f49046603377" />| <img width="320" height="240" alt="IMG_20260617_031004" src="https://github.com/user-attachments/assets/acb52e84-4610-4ce1-b481-a99dd357f877" />|
 | *集成 MPU6050 与足压传感器，3D打印外壳* | *圆盘 LCD 显示，搭载心率及肌电接口* | *基于双 ESP32-S3 的分布式总线设计* |
 
-### 2. 软件交互与云平台看板
-| LVGL 本地交互仪表盘 | OneNET 物联网云端监控 | Edge Impulse 边缘模型训练 | 手机配套 APP 界面 |
-| :---: | :---: | :---: | :---: |
-| ![LVGL交互](此处替换为图片链接4) | ![OneNET平台](此处替换为图片链接5) | ![EdgeImpulse训练](此处替换为图片链接6) | ![手机APP](此处替换为图片链接7) |
-| *多源融合数据的本地实时渲染* | *长周期全维运动数据集存储与转发* | *多模态特征分析与轻量化网络部署* | *移动端长周期生物力学趋势评估* |
+### 3. 交互界面展示（竖屏穿戴与移动端）
+| LVGL 本地交互仪表盘 | 手机配套 APP 界面 | OneNET 物联网云端监控|
+| :---: | :---: | :---: |
+|<img width="300" height="300" alt="IMG_20260617_032930" src="https://github.com/user-attachments/assets/ab923d7a-4eae-4c95-9b12-6984b288d4de" />| <img width="200" height="450" alt="Screenshot_20260624_215140" src="https://github.com/user-attachments/assets/3a734229-ca0f-49b5-bac7-b975303e9b35" />|<img width="450" height="300" alt="屏幕截图 2026-06-16 155639" src="https://github.com/user-attachments/assets/2c879955-122e-4a8d-ab5f-b0878f54323b" />|
+
+| *多源融合数据的本地实时渲染（长宽比约3:4）* | *移动端长周期生物力学趋势评估* | *物联网长周期全维运动数据集存储、图表转发与云端实时状态监控看板|
+
+### 4. Edge Impulse 边缘智能全流程监控
+| ① 原始运动数据样本 (Data Acquisition) | ② 神经网络分类器训练 (NN Classifier) | ③ 多模态样本分类图示 (Feature Explorer) |
+| :---: | :---: | :---: |
+|<img width="310" height="320" alt="屏幕截图 2026-06-17 031507" src="https://github.com/user-attachments/assets/5cfd752c-c3e5-4642-a101-d57aace9ab1b" />|<img width="450" height="220" alt="屏幕截图 2026-06-17 032134" src="https://github.com/user-attachments/assets/436eadf3-3dfb-4f2c-b742-40fc59cbc9c5" />| <img width="350" height="230" alt="屏幕截图 2026-06-17 032512" src="https://github.com/user-attachments/assets/7d4ba19b-e61a-485f-bb08-bbeb39e3f7d5" />|
+| *多模态传感器高频切片数据采集与标签定义* | *轻量化神经网络混淆矩阵调优与性能评估* | *高维运动信号特征重构与聚类降维可视化* |
+
+
+
 
 ---
 
