@@ -50,8 +50,7 @@
 ### 1. 硬件端实物与结构设计
 | 脚踝传感终端实物 | 手表处理终端实物 | 系统整体硬件框图 |
 | :---: | :---: | :---: |
-| ![<img width="307.2" height="409.6" alt="IMG_20260617_025606_edit_87442" src="https://github.com/user-attachments/assets/2827fc88-e5a3-49ee-a134-8bc01553787c" />](
-) | ![手环端实物](此处替换为图片链接2) | ![整体硬件框图](此处替换为图片链接3) |
+| <img width="240" height="320" alt="IMG_20260617_025606_edit_87442" src="https://github.com/user-attachments/assets/d5549600-c86e-455e-bf42-dee82c5ba487" />|<img width="240" height="320" alt="IMG_20260617_030354" src="https://github.com/user-attachments/assets/b311ae89-6a77-4f1d-809a-f49046603377" />| <img width="320" height="240" alt="IMG_20260617_031004" src="https://github.com/user-attachments/assets/acb52e84-4610-4ce1-b481-a99dd357f877" />|
 | *集成 MPU6050 与足压传感器，3D打印外壳* | *圆盘 LCD 显示，搭载心率及肌电接口* | *基于双 ESP32-S3 的分布式总线设计* |
 
 ### 2. 软件交互与云平台看板
