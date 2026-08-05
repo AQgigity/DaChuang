@@ -19,9 +19,9 @@
 
 ## 🛠 技术栈与工程框架 (Tech Stack)
 
-* **核心硬件**：ESP32-S3 (Xtensa® 双核 32 位 LX7 处理器)
+* **核心硬件**：ESP32-S3 
 * **嵌入式开发框架**：ESP-IDF / FreeRTOS 多任务协同调度
-* **人机交互 GUI**：LVGL (Light and Versatile Graphics Library) 图形渲染引擎
+* **人机交互 GUI**：LVGL 图形渲染引擎
 * **信号处理与算法**：ADC 多通道采样、数字滤波去噪、肌电信号特征提取、足压时序差异算法
 * **边缘 AI 部署**：Edge Impulse 嵌入式深度学习推理
 * **物联网协议与云端**：MQTT 协议、OneNET 物联网云平台、定制化手机 App
